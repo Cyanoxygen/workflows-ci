@@ -1,0 +1,210 @@
+#!/bin/bash
+# prepare-ciel - Script to run CIEL! unattendedly
+
+# global variables
+CIEL_ROOT=${CIEL_ROOT:$PWD}
+TARGET_BRANCH=${TARGET_BRANCH}
+PACKAGES=()
+BATCHID=$BATCHID
+RESUME=$RESUME
+
+# Colors
+# It is a shame that Win32 Consoles does not have ANSI Escape code support - until Windows 10.
+tb="\033[1m"	# Bold text
+cW="\033[37m"	# White color
+ci="\033[36m"	# Color for INFO (cyan)
+cw="\033[33m"	# Color for WARN (yellow)
+ce="\033[31m"	# Color for ERR! (red)
+cm="\033[0m"	# Everything become normal
+
+# If output is not a terminal, we disable colors
+if ! [ -t 1 ] ; then
+	tb=
+	cW=
+	ci=
+	cw=
+	ce=
+	cm=
+fi
+
+# Logging helpers
+i() {
+	echo -e "$tb[${ci}INFO${cW}]: $@$cm"
+}
+
+warn() {
+	echo -e "$tb[${cw}WARN${cW}]: $@$cm"
+}
+
+e() {
+	echo -e "$tb[${ce}ERR!${cW}]: $@$cm"
+}
+
+bail() {
+	e "$@"
+	exit 1
+}	
+
+detect_ciel() {
+	# Simulate ciel's behavior (but half of it)
+	# Search for .ciel directory for the entire path, recursively. (Luckily enough Bash functions can be recursive.)
+	local _path
+	if [ "$1" ] ; then
+		_path=$1
+	else
+		_path=$PWD
+	fi
+
+	if [ -e "$_path/.ciel" ] ; then
+		CIEL_ROOT=$_path
+		return 0
+	elif [ "$_path" == "/" ] ; then
+		e "Unable to detect ciel workspace: Hit the filesystem ceiling!"
+		exit 1
+	else
+		detect_ciel "$(realpath $_path/../)"
+	fi
+}
+
+detect_ciel $CIEL_ROOT
+i "Detected Ciel workspace: $CIEL_ROOT"
+
+# Try to verify Ciel workspace status
+	cd $CIEL_ROOT
+	ninstances="$(ciel list &>1 | wc -l)"
+	if [ "$(($ninstances - 1))" == "0" -o "$?" != "0" ] ; then
+		bail "Please set up your Ciel workspace first"
+	fi
+
+# Try to access Git tree
+	cd $CIEL_ROOT/TREE
+	git status > /dev/null
+	if [ "$?" != "0" ] ; then
+		e "Can not access the Git tree under $CIEL_ROOT/TREE."
+		bail "Make sure you are running this script with CORRECT user."
+	fi
+
+# Fill $TARGET_BRANCH
+if ! [ "$TARGET_BRANCH" ] ; then
+		cd $CIEL_ROOT/TREE
+		TARGET_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+fi
+if [ "$TARGET_BRANCH" == "HEAD" ] ; then
+	# Where you at?
+	e "This tree must be at an branch, not a commit or tag."
+	bail "This tree seems in a dangling state - Please manually specify target branch with TARGET_BRANCH variable."
+fi
+
+if [ "$BATCHID" ] ; then
+	# Do not destroy the previous work
+	NOCLEAN=1
+fi
+
+# Clean
+if ! [ "$NOCLEAN" ] ; then
+	i "Cleaning Ciel OUTPUT directories under $CIEL_ROOT..."
+	cd $CIEL_ROOT
+	for i in `find $CIEL_ROOT -maxdepth 1 -type d -name 'OUTPUT*' -printf '%P\n'` ; do
+		i "Removing OUTPUT directory $i..."
+		sudo rm -rv $i
+	done
+
+	i "Cleaning Git Tree..."
+	cd $CIEL_ROOT/TREE
+	git clean -dxf
+fi
+
+# Update Git Tree
+if ! [ "$NOUPDATE" ] ; then
+	i "Updating Git tree at $CIEL_ROOT/TREE..."
+	cd $CIEL_ROOT/TREE
+	git fetch
+	git checkout $TARGET_BRANCH > /dev/null
+	if [ "$?" != "0" ] ; then
+		bail "Can not checkout to branch '$TARGET_BRANCH'."
+	fi
+	git pull --rebase
+	if [ "$?" != "0" ] ; then
+		bail "Unable to update target branch $TARGET_BRANCH."
+	fi
+fi
+
+i "Preparing Ciel..."
+i "Updating OS Container..."
+if ! [ "$NOOSUPDATE" ] ; then
+	cd $CIEL_ROOT
+	sudo ciel update-os
+	[ "$?" != "0" ] && bail "Unable to update container OS."
+fi
+
+i "Rolling back container..."
+if ! [ "$NOROLLBACK" ] ; then
+	cd $CIEL_ROOT
+	sudo ciel rollback
+fi
+
+# Record the packages list
+# TODO handle groups - finished
+_num=1
+i "Checking packages..."
+echo -n "Packages: "
+for i in "$@" ; do
+	if [[ "$i" == groups/* ]] ; then
+		# Expand the groups
+		for j in `cat $CIEL_ROOT/TREE/$i` ; do
+			_package=("${j/#*\//}")
+			echo -n "$_package"
+			PACKAGES+=($_package)
+			_num=$(($_num + 1))
+		done
+	else
+		echo -n "$i"
+		PACKAGES+=("$i")
+		_num=$(($_num + 1))
+	fi
+done
+
+echo -e "\n Preparing to build..."
+# TODO Add resume functionality
+# BATCHID has enough information
+if ! [ "$BATCHID" ] ; then
+	# Generate one
+	BATCHID="$(date '+%s%N')"
+	i "BatchID = $BATCHID"
+	echo $BATCHID
+fi
+
+# Create list and status file
+i "Creating status and list file..."
+sudo mkdir -pv $CIEL_ROOT/ci-builds/$BATCHID
+statfile="$CIEL_ROOT/ci-builds/$BATCHID/status"
+listfile="$CIEL_ROOT/ci-builds/$BATCHID/list"
+
+sudo touch $CIEL_ROOT/ci-builds/batches
+sudo touch $CIEL_ROOT/ci-builds/latest-id
+echo $BATCHID | sudo tee -a $CIEL_ROOT/ci-builds/batches
+echo $BATCHID | sudo tee $CIEL_ROOT/ci-builds/latest-id
+sudo touch $statfile || bail "Unable to create status file."
+sudo touch $listfile || bail "Unable to create list file."
+
+echo "${PACKAGES[@]}" | sudo tee $listfile > /dev/null
+for i in ${PACKAGES[@]} ; do
+	i "Building $i..."
+	echo "$i" | sudo tee $statfile > /dev/null
+	_LANG=$LANG
+	export LANG=C
+	safename=${i/\//_}
+	sudo script -qc "ciel build $CIEL_INSTANCE $i" $CIEL_ROOT/ci-builds/$BATCHID/$safename.log
+	if [ "$?" != "0" ] ; then
+		export LANG=$_LANG
+		e "Error building package $i ^o^"
+		e "Please checkout the log $CIEL_ROOT/ci-builds/$BATCHID/$i.log for details."
+		bail "Can not continue. Bailing out."
+	fi
+done
+export LANG=$_LANG
+
+i "Done! ${#PACKAGES} packages built"
+echo "success" | sudo tee $statfile > /dev/null
+
+unset statfile listfile
