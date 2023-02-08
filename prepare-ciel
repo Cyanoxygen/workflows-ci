@@ -6,7 +6,8 @@ CIEL_ROOT=${CIEL_ROOT:$PWD}
 TARGET_BRANCH=${TARGET_BRANCH}
 PACKAGES=()
 BATCHID=$BATCHID
-RESUME=$RESUME
+RESUME=
+CIEL_INSTANCE=${CIEL_INSTANCE:-stable}
 
 # Colors
 # It is a shame that Win32 Consoles does not have ANSI Escape code support - until Windows 10.
@@ -66,23 +67,30 @@ detect_ciel() {
 	fi
 }
 
+if [ $# == "0" ] ; then
+	if [ ! "$BATCHID" ] ; then
+		e "You must specify at least one package to build."
+		bail "If you are resuming from an existing session, specify an BATCHID."
+	fi
+fi
+
 detect_ciel $CIEL_ROOT
 i "Detected Ciel workspace: $CIEL_ROOT"
 
 # Try to verify Ciel workspace status
-	cd $CIEL_ROOT
-	ninstances="$(ciel list &>1 | wc -l)"
-	if [ "$(($ninstances - 1))" == "0" -o "$?" != "0" ] ; then
-		bail "Please set up your Ciel workspace first"
-	fi
+cd $CIEL_ROOT
+ninstances="$(ciel list &>1 | wc -l)"
+if [ "$(($ninstances - 1))" == "0" -o "$?" != "0" ] ; then
+	bail "Please set up your Ciel workspace first"
+fi
 
 # Try to access Git tree
-	cd $CIEL_ROOT/TREE
-	git status > /dev/null
-	if [ "$?" != "0" ] ; then
-		e "Can not access the Git tree under $CIEL_ROOT/TREE."
-		bail "Make sure you are running this script with CORRECT user."
-	fi
+cd $CIEL_ROOT/TREE
+git status > /dev/null
+if [ "$?" != "0" ] ; then
+	e "Can not access the Git tree under $CIEL_ROOT/TREE."
+	bail "Make sure you are running this script with CORRECT user."
+fi
 
 # Fill $TARGET_BRANCH
 if ! [ "$TARGET_BRANCH" ] ; then
@@ -145,56 +153,94 @@ fi
 
 # Record the packages list
 # TODO handle groups - finished
-_num=1
-i "Checking packages..."
-echo -n "Packages: "
-for i in "$@" ; do
-	if [[ "$i" == groups/* ]] ; then
-		# Expand the groups
-		for j in `cat $CIEL_ROOT/TREE/$i` ; do
-			_package=("${j/#*\//}")
-			echo -n "$_package"
-			PACKAGES+=($_package)
-			_num=$(($_num + 1))
-		done
-	else
-		echo -n "$i"
-		PACKAGES+=("$i")
-		_num=$(($_num + 1))
+if [ ! "$BATCHID" ] ; then
+	i "Checking packages..."
+	echo -n "Packages: "
+	for i in "$@" ; do
+		if [[ "$i" == groups/* ]] ; then
+			# Expand the groups
+			i "\nExpanding group $i..."
+			echo -n "$i: "
+			for j in `cat $CIEL_ROOT/TREE/$i` ; do
+				_package=("${j/#*\//}")
+				echo -n "$_package "
+				PACKAGES+=($_package)
+			done
+			echo -en "\nPackages: "
+		else
+			echo -n "$i "
+			PACKAGES+=("$i")
+		fi
+	done
+else
+	if [ "$#" -gt 0 ] ; then
+		warn "You specified both BATCHID and packages. Packages specified later will be ignored."
 	fi
-done
-
-echo -e "\n Preparing to build..."
+fi
+echo ""
+i "Preparing to build..."
 # TODO Add resume functionality
 # BATCHID has enough information
-if ! [ "$BATCHID" ] ; then
+if [ ! "$BATCHID" ] ; then
 	# Generate one
-	BATCHID="$(date '+%s%N')"
+	_rand="$(openssl rand 5 | base32)"
+	_rand=${_rand,,}
+	BATCHID="$(date '+%Y%m%d%H%M')-$_rand"
 	i "BatchID = $BATCHID"
-	echo $BATCHID
+else
+	i "Trying to resume from previous session..."
+	if [ ! -e "$CIEL_ROOT/ci-builds/$BATCHID" -o \
+		! -e "$CIEL_ROOT/ci-builds/$BATCHID/status" -o \
+		! -e "$CIEL_ROOT/ci-builds/$BATCHID/list" ] ; then
+		e "There is no such session with batch ID '$BATCHID' found in this Ciel workspace."
+		bail "Make sure you are using the correct Ciel workspace, and the batch ID does exist."
+	fi
+	_curpkg="$(cat $CIEL_ROOT/ci-builds/$BATCHID/status)"
+	_list="$(cat $CIEL_ROOT/ci-builds/$BATCHID/list)"
+	_found=0
+	if [ "$_curpkg" == "success" ] ; then
+		i "This batch was successfully built! Exiting."
+		i "If this was a mistake, please modify the status file to the package you want to build."
+		exit 0
+	fi
+	for i in $_list ; do
+		if [ "$i" == "$_curpkg" ] ; then
+			_found=1
+		fi
+		if [ $_found == "1" ] ; then
+			PACKAGES+=($i)
+		fi
+	done
+	RESUME=$BATCHID
+	i "Recovered list of packages: ${PACKAGES[@]}"
+	i "Last packages build attempt: $_curpkg"
 fi
 
 # Create list and status file
-i "Creating status and list file..."
 sudo mkdir -pv $CIEL_ROOT/ci-builds/$BATCHID
 statfile="$CIEL_ROOT/ci-builds/$BATCHID/status"
 listfile="$CIEL_ROOT/ci-builds/$BATCHID/list"
 
+i "Updating status..."
 sudo touch $CIEL_ROOT/ci-builds/batches
 sudo touch $CIEL_ROOT/ci-builds/latest-id
-echo $BATCHID | sudo tee -a $CIEL_ROOT/ci-builds/batches
-echo $BATCHID | sudo tee $CIEL_ROOT/ci-builds/latest-id
-sudo touch $statfile || bail "Unable to create status file."
-sudo touch $listfile || bail "Unable to create list file."
+echo $BATCHID | sudo tee -a $CIEL_ROOT/ci-builds/batches > /dev/null
+echo $BATCHID | sudo tee $CIEL_ROOT/ci-builds/latest-id > /dev/null
 
-echo "${PACKAGES[@]}" | sudo tee $listfile > /dev/null
+if [ ! $RESUME ] ; then
+	i "Creating list and status file..."
+	sudo touch $statfile || bail "Unable to create status file."
+	sudo touch $listfile || bail "Unable to create list file."
+	echo "${PACKAGES[@]}" | sudo tee $listfile > /dev/null
+fi
+
 for i in ${PACKAGES[@]} ; do
 	i "Building $i..."
 	echo "$i" | sudo tee $statfile > /dev/null
 	_LANG=$LANG
 	export LANG=C
 	safename=${i/\//_}
-	sudo script -qc "ciel build $CIEL_INSTANCE $i" $CIEL_ROOT/ci-builds/$BATCHID/$safename.log
+	sudo script -qc "ciel build -i $CIEL_INSTANCE $i" $CIEL_ROOT/ci-builds/$BATCHID/$safename.log
 	if [ "$?" != "0" ] ; then
 		export LANG=$_LANG
 		e "Error building package $i ^o^"
@@ -207,4 +253,6 @@ export LANG=$_LANG
 i "Done! ${#PACKAGES} packages built"
 echo "success" | sudo tee $statfile > /dev/null
 
-unset statfile listfile
+# TODO copy build artifacts (OUTPUT-$TARGET_BRANCH directory) to ci-builds/$BATCHID
+
+unset _rand _curpkg _pkglist CIEL_ROOT RESUME PACKAGES TARGET_BRANCH statfile listfile
