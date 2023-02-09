@@ -1,14 +1,28 @@
 #!/bin/bash
 # prepare-ciel - Script to run CIEL! unattendedly
 
-# global variables
+# global variables - can be specified outside of the script
+# Ciel workspace
 CIEL_ROOT=${CIEL_ROOT:$PWD}
-TARGET_BRANCH=${TARGET_BRANCH}
-PACKAGES=()
+# Target branch
+TARGET_BRANCH=${TARGET_BRANCH:-stable}
+# Batch ID (if resuming from a previous session)
 BATCHID=$BATCHID
-RESUME=
+# Ciel instance to use for build
 CIEL_INSTANCE=${CIEL_INSTANCE:-stable}
+# Do not clean up Ciel workspace and Git tree (any non-null value is true)
+NOCLEAN=$NOCLEAN
+# Do not update Git tree
+NOUPDATE=$NOUPDATE
+# Do not update base OS of the Ciel workspace
+NOOSUPDATE=$NOOSUPDATE
+# Artifact output directory
+ARTIFACT_OUT_DIR=${ARTIFACT_OUT_DIR}
 
+# The following variables can not be specified
+PACKAGES=()
+# Used to let the script know we are resuming
+RESUME=
 # Colors
 # It is a shame that Win32 Consoles does not have ANSI Escape code support - until Windows 10.
 tb="\033[1m"	# Bold text
@@ -145,12 +159,6 @@ if ! [ "$NOOSUPDATE" ] ; then
 	[ "$?" != "0" ] && bail "Unable to update container OS."
 fi
 
-i "Rolling back container..."
-if ! [ "$NOROLLBACK" ] ; then
-	cd $CIEL_ROOT
-	sudo ciel rollback
-fi
-
 # Record the packages list
 # TODO handle groups - finished
 if [ ! "$BATCHID" ] ; then
@@ -216,6 +224,15 @@ else
 	i "Last packages build attempt: $_curpkg"
 fi
 
+i "Creating artifact output directory..."
+if [ ! "$ARTIFACT_OUT_DIR" ] ; then
+	ARTIFACT_OUT_DIR=$CIEL_ROOT/ci-builds/$BATCHID/out
+fi
+sudo mkdir -pv $ARTIFACT_OUT_DIR || bail "Can not create artifact output directory."
+sudo ln -sfv $ARTIFACT_OUT_DIR $CIEL_ROOT/ci-builds/latest-out || bail "Can not create link to the artifact out directory."
+sudo touch $ARTIFACT_OUT_DIR/batchid || bail "Can not create files in the artifact output directory."
+echo $BATCHID | sudo tee $ARTIFACT_OUT_DIR/batchid > /dev/null || bail "Can not write to the files in the artifact output directory."
+
 # Create list and status file
 sudo mkdir -pv $CIEL_ROOT/ci-builds/$BATCHID
 statfile="$CIEL_ROOT/ci-builds/$BATCHID/status"
@@ -224,6 +241,7 @@ listfile="$CIEL_ROOT/ci-builds/$BATCHID/list"
 i "Updating status..."
 sudo touch $CIEL_ROOT/ci-builds/batches
 sudo touch $CIEL_ROOT/ci-builds/latest-id
+sudo ln -sfv $BATCHID $CIEL_ROOT/ci-builds/latest
 echo $BATCHID | sudo tee -a $CIEL_ROOT/ci-builds/batches > /dev/null
 echo $BATCHID | sudo tee $CIEL_ROOT/ci-builds/latest-id > /dev/null
 
@@ -234,6 +252,8 @@ if [ ! $RESUME ] ; then
 	echo "${PACKAGES[@]}" | sudo tee $listfile > /dev/null
 fi
 
+i "Entering $CIEL_ROOT..."
+cd $CIEL_ROOT
 for i in ${PACKAGES[@]} ; do
 	i "Building $i..."
 	echo "$i" | sudo tee $statfile > /dev/null
@@ -253,6 +273,28 @@ export LANG=$_LANG
 i "Done! ${#PACKAGES} packages built"
 echo "success" | sudo tee $statfile > /dev/null
 
-# TODO copy build artifacts (OUTPUT-$TARGET_BRANCH directory) to ci-builds/$BATCHID
+i "Copying artifacts..."
+if [ ! -e $CIEL_ROOT/OUTPUT-$TARGET_BRANCH ] ; then
+	warn "Can not locate the corresponding OUTPUT directory - copying everything."
+	for f in `find $CIEL_ROOT -maxdepth 1 -type d -name 'OUTPUT-*'` ; do
+		cd $i
+		find . -type f -exec install -Dvm644 {} $ARTIFACT_OUT_DIR/{} \;
+	done
+else
+	cd $CIEL_ROOT/OUTPUT-$TARGET_BRANCH
+	find . -type f -exec install -Dvm644 {} $ARTIFACT_OUT_DIR/{} \;
+fi
+
+i "Copying logs..."
+cd $CIEL_ROOT/ci-builds/$BATCHID
+find -maxdepth 1 -type f -exec install -Dvm644 {} $ARTIFACT_OUT_DIR/{} \;
+
+i "Job finished successfully!"
+i "Ciel workspace: $CIEL_ROOT"
+i "Batch ID: $BATCHID"
+i "CI log directory: $CIEL_ROOT/ci-builds/$BATCHID"
+i "Artifact output directory: $ARTIFACT_OUT_DIR"
 
 unset _rand _curpkg _pkglist CIEL_ROOT RESUME PACKAGES TARGET_BRANCH statfile listfile
+
+exit 0
