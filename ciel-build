@@ -270,7 +270,7 @@ for i in ${PACKAGES[@]} ; do
 done
 export LANG=$_LANG
 
-i "Done! ${#PACKAGES} packages built"
+i "Done! ${#PACKAGES[@]} packages built"
 echo "success" | sudo tee $statfile > /dev/null
 
 i "Copying artifacts..."
