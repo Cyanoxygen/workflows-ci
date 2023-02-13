@@ -1,0 +1,12 @@
+core-libs/glibc
+core-devel/binutils
+core-libs/gmp
+core-libs/mpfr
+core-libs/mpc
+core-libs/isl
+core-devel/gcc
+core-devel/binutils
+core-database/gdbm
+core-database/db
+core-perl/perl
+core-devel/make
