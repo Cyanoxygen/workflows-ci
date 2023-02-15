@@ -5,7 +5,6 @@ core-libs/mpfr
 core-libs/mpc
 core-libs/isl
 core-devel/gcc
-core-devel/binutils
 core-database/gdbm
 core-database/db
 core-perl/perl
