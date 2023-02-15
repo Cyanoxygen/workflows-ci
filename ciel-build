@@ -23,42 +23,14 @@ ARTIFACT_OUT_DIR=${ARTIFACT_OUT_DIR}
 PACKAGES=()
 # Used to let the script know we are resuming
 RESUME=
-# Colors
-# It is a shame that Win32 Consoles does not have ANSI Escape code support - until Windows 10.
-tb="\033[1m"	# Bold text
-cW="\033[37m"	# White color
-ci="\033[36m"	# Color for INFO (cyan)
-cw="\033[33m"	# Color for WARN (yellow)
-ce="\033[31m"	# Color for ERR! (red)
-cm="\033[0m"	# Everything become normal
 
-# If output is not a terminal, we disable colors
-if ! [ -t 1 ] ; then
-	tb=
-	cW=
-	ci=
-	cw=
-	ce=
-	cm=
+if [ ! -e "$PWD"/data/tracked-packages ] ; then
+	echo "Unable to find the tracked packages file."
+	echo "This script should be run at the root directory of workflows-ci repository."
+	exit
 fi
 
-# Logging helpers
-i() {
-	echo -e "$tb[${ci}INFO${cW}]: $@$cm"
-}
-
-warn() {
-	echo -e "$tb[${cw}WARN${cW}]: $@$cm"
-}
-
-e() {
-	echo -e "$tb[${ce}ERR!${cW}]: $@$cm"
-}
-
-bail() {
-	e "$@"
-	exit 1
-}	
+source common/utils.bash
 
 detect_ciel() {
 	# Simulate ciel's behavior (but half of it)
