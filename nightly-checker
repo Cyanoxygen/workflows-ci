@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+import datetime
+import os
+import re
+import subprocess
+import sys
+
+# This script only modifies SRCS and VER.
+keys_to_modify = ['VER', 'SRCS']
+
+# REL will be removed.
+keys_to_skip = ['REL']
+
+class logger:
+	DEBUG = 1
+	INFO = 2
+	WARN = 3
+	ERR = 4
+	QUIET = 5
+
+	COLOR_RED = '\033[31m'
+	COLOR_GREEN = '\033[32m'
+	COLOR_YELLOW = '\033[33m'
+	COLOR_CYAN = '\033[36m'
+	COLOR_WHITE = '\033[37m'
+	TEXT_BOLD = '\033[1m'
+	TEXT_NORMAL = '\033[0m'
+
+	level: int = INFO
+
+	@staticmethod
+	def out(string, level):
+		if level >= logger.level:
+			print("nightly-checker> " + string)
+
+	@staticmethod
+	def debug(string: str):
+		logger.out(f'{logger.TEXT_BOLD}[{logger.COLOR_GREEN}DEBUG{logger.COLOR_WHITE}]: {string}{logger.TEXT_NORMAL}', logger.DEBUG)
+
+	@staticmethod
+	def info(string: str):
+		logger.out(f'{logger.TEXT_BOLD}[{logger.COLOR_CYAN}INFO{logger.COLOR_WHITE}]: {string}{logger.TEXT_NORMAL}', logger.INFO)
+
+	@staticmethod
+	def warn(string: str):
+		logger.out(f'{logger.TEXT_BOLD}[{logger.COLOR_CYAN}WARN{logger.COLOR_WHITE}]: {string}{logger.TEXT_NORMAL}', logger.WARN)
+
+	@staticmethod
+	def error(string: str):
+		logger.out(f'{logger.TEXT_BOLD}[{logger.COLOR_CYAN}ERR!{logger.COLOR_WHITE}]: {string}{logger.TEXT_NORMAL}', logger.ERR)
+
+
+def parse_kvs(content: list[str]) -> dict:
+	lastline = ''
+	parsed_lines = []
+	kvs: dict[str, str] = {}
+	for line in content:
+		logger.debug('Current line: {}'.format(line))
+		if len(line.strip()) == 0:
+			continue
+		lastline = ' '.join([lastline.rstrip().rstrip('\\'), line]).lstrip()
+		if not line.rstrip().endswith('\\'):
+			logger.debug('Appending line: {}'.format(lastline))
+			parsed_lines.append(lastline)
+			lastline = ''
+			continue
+
+	logger.debug(f'Parsed content: {parsed_lines}')
+	logger.debug('Parsing lines into key and vaules...')
+	for line in parsed_lines:
+		k, v = re.findall(r"([a-zA-Z_]+?)=(.*)", line)[0]
+		if k in keys_to_modify:
+			v = v.strip('"').strip("'")
+		# Optionally we can expand variables by using r'\${?([a-zA-Z0-9_]+)}?'.
+		# This is not necessary for this script. And calling Bash is more accurate in case of substitution.
+		# Or to use pyparser, like what ACBS does.
+		logger.debug(f'Splited (k, v) = {(k, v)}')
+		kvs[k] = v
+
+	logger.debug(f'Parsed keys and vaules: {kvs}')
+
+	return kvs
+
+
+def parse_src_kvs(val: str) -> list[dict]:
+	'''
+	This function accepts the vaule of `SRCS`, i.e. you can pass an array of SRCS entries.
+	'''
+	srcs = []
+	for entry in re.split(r'\s+', val):
+		logger.debug(f'Parsing entry: {entry}')
+		name, spec = entry.split('::', 1)
+		kv = {}
+		if '::' in spec:
+			options_str, url = spec.split('::')
+			for option in options_str.split(';'):
+				k, v = option.split('=')
+				kv[k] = v
+		else:
+			url = spec
+		kv['name'] = name
+		kv['url'] = url
+		logger.debug(f'Parsed (k, v): {kv}')
+		srcs.append(kv)
+	return srcs
+
+
+def git_fetch_head(url: str, ref: str) -> str:
+	'''
+	Call `git-ls-remote(1)` to fetch the latest commit ID of a ref, without cloning the repository.
+	'''
+	full_ref = f'refs/heads/{ref}'
+	result = ''
+	try:
+		result = subprocess.check_output(
+			args = ['git', 'ls-remote', '--exit-code', url, full_ref],
+		)
+	except subprocess.CalledProcessError:
+		raise Exception(f'Can not check latest commit for ref {url}:{ref}. git-ls-remote exited with failure.')
+	result = result.decode()
+	return re.split(r'\s+', result)[0]
+
+
+def check_for_update(parsed_srcs) -> int:
+	logger.info('Checking for updates of all Git sources...')
+	count = 0
+
+	for src in parsed_srcs:
+		if src['name'] != 'git':
+			logger.info(f'Source {src["url"]} is not a Git source, skipping.')
+			continue
+		logger.info(f'Checking {src["url"]}...')
+		ref = 'master' if 'branch' not in src else src['branch']
+		commit_id = git_fetch_head(src['url'], ref)
+		if 'commit' in src and commit_id == src['commit']:
+			logger.info(f'Source {src["url"]} is up to date.')
+			continue
+		src['commit'] = commit_id
+		count += 1
+	logger.info(f'{count} Git sources have been updated.')
+	return count
+
+
+def main():
+	logger.level = logger.INFO
+	logger.info('Git nightly update checker')
+	pwd = os.path.realpath('.')
+	logger.info('Reading spec file...')
+	if not os.path.exists(os.path.join(pwd, 'spec')):
+		raise FileNotFoundError("spec file does not exist.")
+	content = []
+	parsed_kvs = {}
+	parsed_srcs = []
+	with open(os.path.join(pwd, 'spec'), 'r') as f:
+		content.extend(l.strip() for l in f.readlines())
+	parsed_kvs: dict = parse_kvs(content)
+	parsed_srcs = parse_src_kvs(parsed_kvs['SRCS'])
+	count = check_for_update(parsed_srcs)
+	if count == 0:
+		logger.warn('No updates found. Bye!')
+		sys.exit(0)
+	# Write back changes
+	date = datetime.datetime.now().strftime('%Y%m%d')
+	new_ver = f'0+git{date}'
+	parsed_kvs['VER'] = new_ver
+	logger.info("Writting back changes...")
+	constructed_srcs_values= []
+	for src in parsed_srcs:
+		if len(src) == 2:
+			entry = f'{src["name"]}::{src["url"]}'
+		else:
+			keys = list(src.keys())
+			keys.remove('url')
+			keys.remove('name')
+			option_str = ';'.join(f"{k}={src[k]}" for k in keys)
+			entry = f'{src["name"]}::{option_str}::{src["url"]}'
+		constructed_srcs_values.append(entry)
+	constructed_srcs = ' \\\n\t'.join(constructed_srcs_values)
+	parsed_kvs['SRCS'] = constructed_srcs
+	with open(os.path.join(pwd, 'spec'), 'w') as f:
+		for key in parsed_kvs:
+			if key in keys_to_skip:
+				continue
+			if key in keys_to_modify:
+				f.write('{}="{}"\n'.format(key, parsed_kvs[key]))
+			else:
+				# Replace \n with \\\n + number of whitespaces.
+				expanded_val = parsed_kvs[key].replace('\n','\\\n')
+				f.write('{}={}\n'.format(key, expanded_val))
+		f.write('\n')
+	logger.info("Done writting changes. Have fun!")
+	sys.exit(0)
+
+
+if __name__ == '__main__':
+	main()
+
