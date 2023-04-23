@@ -1,8 +1,8 @@
-#!/bin/bash
+#!/bin/bash -e
 
 # check-update-job: Check for updates
 
-NIGHTLY=0
+NIGHTLY=${NIGHTLY:-0}
 
 TREEDIR=${TREEDIR:-$PWD}
 
@@ -10,7 +10,9 @@ UPSTREAM_ABBS_URL=${UPSTREAM_ABBS_URL:-"https://github.com/AOSC-Dev/aosc-os-abbs
 
 BRANCH_TO_REBASE=${BRANCH_TO_REBASE:-"stable"}
 
-NOCONFIG_GIT=0
+NOCONFIG_GIT=${NOCONFIG_GIT:-0}
+
+BRANCH=${BRANCH:-bleeding-edge}
 
 if [ ! -e "$PWD"/data/tracked-packages ] ; then
 	echo "Unable to find the tracked packages file."
@@ -18,15 +20,45 @@ if [ ! -e "$PWD"/data/tracked-packages ] ; then
 	exit
 fi
 
-ROOT=$PWD
-source common/utils.bash
+UPDATED=()
 
+ROOT=$PWD
+source $ROOT/common/utils.bash
+if [ -e $ROOT/ci.conf ] ; then
+	source $ROOT/ci.conf
+fi
 pushd $TREEDIR
 
-BRANCH=bleeding-edge
+check_update_aoscfindupdate() {
+	# $1: package spec directory
+	pushd $1
+	p=$1
+	aosc-findupdate
+	# TODO handle nightly updates
+	if ! git diff --quiet . ; then
+		i "Updating source checksums..."
+		sudo acbs-build -gw "${p/#*\//}"
+		i "${p/#*\//} has been updated."
+		UPDATED+=("$p")
+	fi
+	popd
+}
+
+check_update_git_nightly() {
+	# $1: package spec repository
+	pushd $1
+	p=$1
+	env python3 $ROOT/nightly-checker
+	if ! git diff --quiet . ; then
+		i "${p/#*\//} has been updated."
+		UPDATED+=("$i")
+	fi
+	popd
+}
 
 if [ "$NIGHTLY" == "1" ] ; then
 	BRANCH=bleeding-edge-nightly
+	REBASE="--rebase"
 fi
 
 # Is it a git repository?
@@ -51,41 +83,35 @@ git checkout $BRANCH
 
 i "Cleaning..."
 git checkout --force $BRANCH
-git reset --hard origin/$BRANCH
+# git reset --hard origin/$BRANCH
 
 i "Fetching $UPSTREAM_ABBS_URL..."
-git remote add upstream $UPSTREAM_ABBS_URL
+git remote add upstream $UPSTREAM_ABBS_URL || true
 git fetch upstream || bail "Unable to fetch upstream."
 
 i "Rebasing to Upstream branch $BRANCH_TO_REBASE..."
-git pull upstream $BRANCH_TO_REBASE
+git pull $REBASE upstream $BRANCH_TO_REBASE
 if [ "$?" != "0" ] ; then
 	e "Looks like there are some conflicts during rebase."
 	bail "Failed to rebase to upstream branch $BRANCH_TO_REBASE. Manual intervention required."
 fi
 
-CHANGED=()
-
 i "Checking for updates..."
 for i in `cat $ROOT/data/tracked-packages` ; do
 	i "Checking $i..."
-	pushd $i
-	aosc-findupdate
-	# TODO handle nightly updates
-	if ! git diff --quiet . ; then
-		i "Updating source checksums..."
-		sudo acbs-build -gw "${i/#*\//}"
-		CHANGED+=("$i")
+	if [ "$NIGHTLY" == "1" ] ; then
+		check_update_git_nightly $i
+	else
+		check_update_aoscfindupdate $i
 	fi
-	popd
 done
 
 i "Let's see if there's any changes..."
 if ! git diff --quiet ; then
 	# There are changes
-	i "Okay, we have ${#CHANGED[@]} change(s) to commit."
-	echo "${CHANGED[@]}"
-	for i in ${CHANGED[@]} ; do
+	i "Okay, we have ${#UPDATED[@]} change(s) to commit."
+	echo "${UPDATED[@]}"
+	for i in ${UPDATED[@]} ; do
 		i "Commiting $i..."
 		pushd $i
 		git add .
