@@ -153,9 +153,10 @@ def git_fetch_head(url: str, ref: str, git_srcs_dir: str) -> tuple[str, str]:
 				cwd=repo_path
 			).stdout.decode().strip()
 			logger.info('Fetched latest Git commit and tag information.')
-			tag = re.search(r'\d+(\.\d+){0,2}', tag).group(0)
-			if len(tag) == 0:
-				# Really don't know what to do.
+			try:
+				tag = re.search(r'\d+(\.\d+){0,2}', tag).group(0)
+			except AttributeError:
+				# No such version number was found, really don't know what to do.
 				tag = '0'
 
 	except subprocess.CalledProcessError:
