@@ -58,7 +58,6 @@ check_update_git_nightly() {
 
 if [ "$NIGHTLY" == "1" ] ; then
 	BRANCH=bleeding-edge-nightly
-	REBASE="--rebase"
 fi
 
 # Is it a git repository?
@@ -90,7 +89,7 @@ git remote add upstream $UPSTREAM_ABBS_URL || true
 git fetch upstream || bail "Unable to fetch upstream."
 
 i "Rebasing to Upstream branch $BRANCH_TO_REBASE..."
-git pull $REBASE upstream $BRANCH_TO_REBASE
+git pull --rebase upstream $BRANCH_TO_REBASE
 if [ "$?" != "0" ] ; then
 	e "Looks like there are some conflicts during rebase."
 	bail "Failed to rebase to upstream branch $BRANCH_TO_REBASE. Manual intervention required."
