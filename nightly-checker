@@ -5,7 +5,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 
 # This script only modifies SRCS and VER.
 keys_to_modify = ['VER', 'SRCS']
@@ -115,49 +114,48 @@ def git_fetch_head(url: str, ref: str, git_srcs_dir: str) -> tuple[str, str]:
 	commit = ''
 	tag = None
 	try:
-		with tempfile.TemporaryDirectory() as tmpdir:
-			url_sha256 = hashlib.sha256(url.encode()).digest().hex()
-			repo_path = os.path.join(git_srcs_dir, url_sha256)
-			logger.info('Updating Git repository {} for {}...'.format(repo_path, url))
-			if not os.path.exists(os.path.join(repo_path, '.git')):
-				logger.info('Checking out Git tree {} to path {}...'.format(url, repo_path))
-				subprocess.run(
-					args=['git', 'clone', '--quiet', '-b', ref, '--depth', '1', url, repo_path],
-					stderr=subprocess.DEVNULL,
-					stdout=subprocess.DEVNULL,
-					check=True
-				)
-			else:
-				subprocess.run(
-					args=['git', 'pull', '--ff-only', 'origin', ref],
-					check=True,
-					cwd=repo_path
-				)	
-			commit = subprocess.run(
-				args=['git', 'rev-parse', 'HEAD'],
-				stdout=subprocess.PIPE,
-				check=True,
-				cwd=repo_path
-			).stdout.decode().strip()
-			logger.info('Fetching tag references...')
+		url_sha256 = hashlib.sha256(url.encode()).digest().hex()
+		repo_path = os.path.join(git_srcs_dir, url_sha256)
+		logger.info('Updating Git repository {} for {}...'.format(repo_path, url))
+		if not os.path.exists(os.path.join(repo_path, '.git')):
+			logger.info('Checking out Git tree {} to path {}...'.format(url, repo_path))
 			subprocess.run(
-				args=['git', 'fetch', 'origin', 'refs/tags/*:refs/tags/*'],
-				stdout=subprocess.DEVNULL,
+				args=['git', 'clone', '--quiet', '-b', ref, '--depth', '1', url, repo_path],
 				stderr=subprocess.DEVNULL,
+				stdout=subprocess.DEVNULL,
+				check=True
+			)
+		else:
+			subprocess.run(
+				args=['git', 'pull', '--ff-only', 'origin', ref],
 				check=True,
 				cwd=repo_path
 			)
-			tag = subprocess.run(
-				args=['git', 'for-each-ref', 'refs/tags', '--sort=-taggerdate', '--format=%(refname)', '--count=1'],
-				stdout=subprocess.PIPE,
-				cwd=repo_path
-			).stdout.decode().strip()
-			logger.info('Fetched latest Git commit and tag information.')
-			try:
-				tag = re.search(r'\d+(\.\d+){0,2}', tag).group(0)
-			except AttributeError:
-				# No such version number was found, really don't know what to do.
-				tag = '0'
+		commit = subprocess.run(
+			args=['git', 'rev-parse', 'HEAD'],
+			stdout=subprocess.PIPE,
+			check=True,
+			cwd=repo_path
+		).stdout.decode().strip()
+		logger.info('Fetching tag references...')
+		subprocess.run(
+			args=['git', 'fetch', 'origin', 'refs/tags/*:refs/tags/*'],
+			stdout=subprocess.DEVNULL,
+			stderr=subprocess.DEVNULL,
+			check=True,
+			cwd=repo_path
+		)
+		tag = subprocess.run(
+			args=['git', 'for-each-ref', 'refs/tags', '--sort=-taggerdate', '--format=%(refname)', '--count=1'],
+			stdout=subprocess.PIPE,
+			cwd=repo_path
+		).stdout.decode().strip()
+		logger.info('Fetched latest Git commit and tag information.')
+		try:
+			tag = re.search(r'\d+(\.\d+){0,2}', tag).group(0)
+		except AttributeError:
+			# No such version number was found, really don't know what to do.
+			tag = '0'
 
 	except subprocess.CalledProcessError:
 		raise Exception(f'Can not check latest commit for ref {url}:{ref}. git-ls-remote exited with failure.')
