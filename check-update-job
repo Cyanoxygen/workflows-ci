@@ -48,6 +48,8 @@ check_update_git_nightly() {
 	# $1: package spec repository
 	pushd $1
 	p=$1
+	# Use aosc-findupdate to fetch the latest release version.
+	aosc-findupdate
 	env python3 $ROOT/nightly-checker
 	if ! git diff --quiet . ; then
 		i "${p/#*\//} has been updated."

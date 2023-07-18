@@ -211,7 +211,8 @@ def main():
 		sys.exit(0)
 	# Write back changes
 	date = datetime.datetime.now().strftime('%Y%m%d')
-	new_ver = f'{first_tag}+git{date}'
+	ver = parsed_kvs['VER']
+	new_ver = f'{ver}+git{date}'
 	parsed_kvs['VER'] = new_ver
 	logger.info("Writting back changes...")
 	constructed_srcs_values= []
