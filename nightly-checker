@@ -43,6 +43,176 @@ class logger:
 		logger.out(string, logger.ERR)
 
 
+class VCSSource:
+	'''
+	Class to represent a VCS Source.
+
+	## Methods
+	```
+	def __init__(self, repo_url: str, ref: str, last_rev: str) -> None
+	```
+	Default constructor.
+	- `repo_url` : URL to the repository.
+	- `ref`: Branch to be cloned. Note, not all implementations support this.
+	- `last_rev`: Last recorded commit.
+
+	```
+	def create(src: dict) -> VCSSource
+	```
+	Provide an **parsed** entry in SRCS, returns None if not supported, or else the relevant
+	subclass.
+	The dict should be like this:
+	```
+	{'name': 'git', 'commit': '4b39a764', 'branch': 'stable', 'url': 'https://github.com/AOSC-Dev/aosc-os-abbs'}
+	```
+	Only `name` and `url` fields are required. The remaining part will be filled out automatically.
+	'''
+	vcs_type = ''
+	short_vcs_type = ''
+	def __init__(self, repo_url: str, ref: str, last_rev: str) -> None:
+		# URL to the renote repository
+		self.repo_url = repo_url
+		# Latest commit of the ref
+		self.commit = None
+		# Branch of the repo
+		self.ref = ref
+		# String of the commit date, formated to %Y%m%d (20230718)
+		self.commit_date_str = None
+		# Timestamp of the latest commit
+		self.commit_date_timestamp = 0
+		# Revision number (N th commit of the branch)
+		self.revision = None
+		# Shortened commit
+		self.short_commit = None
+		# Base release version
+		self.base_ver = None
+		# Last recorded commit
+		self.last_rev = last_rev
+
+		# Local path to clone to
+		# Equlas to $SRCREPOS_DIR/$(echo $URL | sha256sum)
+		if 'SRCREPOS_DIR' in os.environ:
+			self.srcrepo_dir = os.path.abspath(os.environ['SRCREPOS_DIR'])
+		else:
+			self.srcrepo_dir = os.path.join(os.environ['HOME'], 'srcrepos')
+
+		url_sha256 = hashlib.sha256(self.repo_url.encode()).digest().hex()
+		self.repo_path = os.path.join(self.srcrepo_dir, url_sha256)
+		try:
+			os.makedirs(self.repo_path, exist_ok=True)
+		except OSError:
+			raise RuntimeError('Unable to create the directory to clone the repositories: {}'.format(self.repo_path))
+
+	@staticmethod
+	def create(src_dict: dict[str, str]) -> 'VCSSource':
+		if "name" not in src_dict:
+			return None
+		if src_dict.get("name") == "git":
+			# Branch
+			ref = src_dict['branch'] if 'branch' in src_dict else 'master'
+			# Last recorded commit
+			last_rev = src_dict['commit'] if 'commit' in src_dict else None
+			return GitSource(src_dict['url'], ref, last_rev)
+		if src_dict.get("name") == "bzr":
+			# Last recorded commit
+			last_rev = src_dict['commit'] if 'commit' in src_dict else None
+			return BazzarSource(src_dict['url'], None, last_rev)
+		if src_dict.get("name") == "svn":
+			# Last recorded commit
+			last_rev = src_dict['commit'] if 'commit' in src_dict else None
+			return SubVersionSource(src_dict['url'], None, last_rev)
+		if src_dict.get("name") == "hg":
+			# Last recorded commit
+			last_rev = src_dict['commit'] if 'commit' in src_dict else None
+			return MercurialSource(src_dict['url'], None, last_rev)
+		return None
+
+	def fetch_ref_head(self) -> str:
+		'''
+		Clones the repository, fetches the relevant information.
+		Returns the latest commit.
+		'''
+		raise NotImplementedError
+
+	def to_version_str(self) -> str:
+		'''
+		Returns the version string in compliance with AOSC OS Package styling manual.
+		Shold be used with a primary source.
+		'''
+		raise NotImplementedError
+
+	def has_update(self) -> bool:
+		'''
+		Returns whether if the repository has updates, by comparing between the latest commit and the last recorded commit.
+		'''
+		raise NotImplementedError
+
+	def check_and_get_output(self, args: list) -> str:
+		return subprocess.run(
+			args=args,
+			stdout=subprocess.PIPE,
+			check=True,
+			cwd=self.repo_path
+		).stdout.decode().strip()
+
+class GitSource(VCSSource):
+	vcs_type = 'git'
+	short_vcs_type = 'git'
+	def __init__(self, url: str, ref: str, last_rev: str) -> None:
+		super().__init__(url, ref, last_rev)
+
+	def fetch_ref_head(self: VCSSource) -> str:
+		'''
+		We need to fetch the latest revision and the nearest tag.
+		'''
+		try:
+			if not os.path.exists(os.path.join(self.repo_path, '.git')):
+				logger.info('checking out git tree {} to path {}...'.format(self.repo_url, self.repo_path))
+				self.check_and_get_output(args=['git', 'clone', '--quiet', '-b', self.ref, '--depth', '1', self.repo_url, self.repo_path])
+			else:
+				logger.info('updating git repository {} for {}...'.format(self.repo_path, self.repo_url))
+				self.check_and_get_output(args=['git', 'fetch', 'origin'])
+				self.check_and_get_output(args=['git', 'pull', '--ff-only', 'origin', self.ref])
+			self.commit = self.check_and_get_output(args=['git', 'rev-parse', 'HEAD'])
+			self.short_commit = self.check_and_get_output(args=['git', 'rev-parse', '--short', self.commit])
+			self.revision = self.check_and_get_output(args=['git', 'rev-list', '--count', self.commit])
+			date_timestamp = self.check_and_get_output(args=['git', 'show', '-s', '--format=%ct', self.commit])
+			self.commit_date_timestamp = int(date_timestamp)
+			self.commit_date_str = datetime.datetime.fromtimestamp(self.commit_date_timestamp).strftime('%Y%m%d')
+
+		except subprocess.CalledProcessError:
+			raise Exception(f'Can not check latest commit for ref {self.repo_url}:{self.ref}. Git exited with failure.')
+		except Exception:
+			raise Exception(f'Failed to fetch {self.repo_url}.')
+		return self.commit
+
+	def to_version_str(self: VCSSource) -> str:
+		return "{0}+{1}{2}.r{3}.{4}".format(self.base_ver, self.short_vcs_type, self.commit_date_str, self.revision, self.short_commit)
+
+	def has_update(self) -> bool:
+		if not self.last_rev:
+			return True
+		return not self.commit.startswith(self.last_rev)
+
+
+class BazzarSource(VCSSource):
+	vcs_type = 'bazzar'
+	short_vcs_type = 'bzr'
+	pass
+
+
+class MercurialSource(VCSSource):
+	vcs_type = 'mercurial'
+	short_vcs_type = 'hg'
+	pass
+
+
+class SubVersionSource(VCSSource):
+	vcs_type = 'subversion'
+	short_vcs_type = 'svn'
+	pass
+
+
 def parse_kvs(content: list[str]) -> dict:
 	lastline = ''
 	parsed_lines = []
@@ -50,6 +220,8 @@ def parse_kvs(content: list[str]) -> dict:
 	for line in content:
 		logger.debug('Current line: {}'.format(line))
 		if len(line.strip()) == 0:
+			continue
+		if line.startswith('#'):
 			continue
 		lastline = ' '.join([lastline.rstrip().rstrip('\\'), line]).lstrip()
 		if not line.rstrip().endswith('\\'):
@@ -98,73 +270,46 @@ def parse_src_kvs(val: str) -> list[dict]:
 	return srcs
 
 
-def git_fetch_head(url: str, ref: str, git_srcs_dir: str) -> str:
-	'''
-	We need to fetch the latest revision and the nearest tag.
-	Returns: (commit, tag)
-	'''
-	commit = ''
-	tag = None
-	try:
-		url_sha256 = hashlib.sha256(url.encode()).digest().hex()
-		repo_path = os.path.join(git_srcs_dir, url_sha256)
-		logger.info('Updating Git repository {} for {}...'.format(repo_path, url))
-		if not os.path.exists(os.path.join(repo_path, '.git')):
-			logger.info('Checking out Git tree {} to path {}...'.format(url, repo_path))
-			subprocess.run(
-				args=['git', 'clone', '--quiet', '-b', ref, '--depth', '1', url, repo_path],
-				stderr=subprocess.DEVNULL,
-				stdout=subprocess.DEVNULL,
-				check=True
-			)
-		else:
-			subprocess.run(
-				args=['git', 'pull', '--ff-only', 'origin', ref],
-				check=True,
-				cwd=repo_path
-			)
-		commit = subprocess.run(
-			args=['git', 'rev-parse', 'HEAD'],
-			stdout=subprocess.PIPE,
-			check=True,
-			cwd=repo_path
-		).stdout.decode().strip()
-
-	except subprocess.CalledProcessError:
-		raise Exception(f'Can not check latest commit for ref {url}:{ref}. git-ls-remote exited with failure.')
-	except Exception:
-		raise Exception(f'Failed to fetch {url}.')
-	return commit
-
-
-def check_for_update(parsed_srcs: dict, git_srcs_dir: str) -> int:
-	logger.info('Checking for updates of all Git sources...')
+def check_for_update(parsed_srcs: list[dict], base_ver: str) -> str:
+	logger.info('Checking for updates of all VCS sources...')
 	count = 0
+	vcs_sources = []
+	primary_source = None
 	for src in parsed_srcs:
-		if src['name'] != 'git':
-			continue
-		logger.info(f'Checking {src["url"]}...')
-		ref = 'master' if 'branch' not in src else src['branch']
-		commit_id = git_fetch_head(src['url'], ref, git_srcs_dir)
-		if 'commit' in src and commit_id.startswith(src['commit']):
+		source = VCSSource.create(src)
+		if not source:
+			logger.info(f'{src["url"]} is not a VCS source. Skipping.')
+		if not primary_source:
+			primary_source = source
+			primary_source.base_ver = base_ver
+		vcs_sources.append(source)
+		source.fetch_ref_head()
+		if not source.has_update():
 			logger.info(f'Source {src["url"]} is up to date.')
 			continue
-		src['commit'] = commit_id
+		src['commit'] = source.commit
 		count += 1
+	# We have updates.
+	# Then we have to determine who has the lastest commits,
+	# by getting their last commit's timestamp.
+	# The latest timestamp should always go to the primary source, which we have the base version of the package set.
+	if count != 0:
+		for src in vcs_sources:
+			if src.commit_date_timestamp > primary_source.commit_date_timestamp:
+				# We want the returned version string from primary source
+				primary_source.commit_date_timestamp = src.commit_date_timestamp
+	new_ver = primary_source.to_version_str()
 	logger.info(f'{count} Git source(s) have been updated.')
-	return count
+	return count, new_ver if count != 0 else None
 
 
 def main():
 	logger.level = logger.INFO
 	pwd = os.path.realpath('.')
-	if 'SRCREPOS_DIR' in os.environ:
-		git_srcs_repos_dir = os.environ['SRCREPOS_DIR']
-	else:
-		git_srcs_repos_dir = os.path.join(os.environ['HOME'], 'srcrepos')
-	os.makedirs(git_srcs_repos_dir, exist_ok=True)
 	if not os.path.exists(os.path.join(pwd, 'spec')):
 		raise FileNotFoundError("spec file does not exist.")
+
+	# Read and parse the spec file
 	content = []
 	parsed_kvs = {}
 	parsed_srcs = []
@@ -172,14 +317,20 @@ def main():
 		content.extend(l.strip() for l in f.readlines())
 	parsed_kvs: dict = parse_kvs(content)
 	parsed_srcs = parse_src_kvs(parsed_kvs['SRCS'])
-	count = check_for_update(parsed_srcs, git_srcs_repos_dir)
+
+	# Check for the base release version
+	try:
+		logger.info('Getting the base release version of the package...')
+		base_ver = subprocess.run(args=['aosc-findupdate', '-c', '--dry-run', '-x'], stdout=subprocess.PIPE, check=True, cwd=pwd).stdout.decode().strip()
+	except subprocess.CalledProcessError:
+		raise RuntimeError('Unable to get the base release version!')
+
+	# Check for updates
+	count, new_ver = check_for_update(parsed_srcs, base_ver)
 	if count == 0:
-		logger.warn('No updates found. Bye!')
-		sys.exit(0)
+		logger.info('No updates found across all VCS sources. Bye!')
+		exit(0)
 	# Write back changes
-	date = datetime.datetime.now().strftime('%Y%m%d')
-	ver = parsed_kvs['VER']
-	new_ver = f'{ver}+git{date}'
 	parsed_kvs['VER'] = new_ver
 	logger.info("Writting back changes...")
 	constructed_srcs_values= []
@@ -205,7 +356,6 @@ def main():
 				# Replace \n with \\\n + number of whitespaces.
 				expanded_val = parsed_kvs[key].replace('\n','\\\n')
 				f.write('{}={}\n'.format(key, expanded_val))
-		f.write('\n')
 	logger.info("Done writting changes. Have fun!")
 	sys.exit(0)
 
