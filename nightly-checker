@@ -28,7 +28,7 @@ class logger:
 
 	@staticmethod
 	def debug(string: str):
-                logger.out(string, logger.DEBUG)
+		logger.out(string, logger.DEBUG)
 
 	@staticmethod
 	def info(string: str):
@@ -158,10 +158,10 @@ def check_for_update(parsed_srcs: dict, git_srcs_dir: str) -> int:
 def main():
 	logger.level = logger.INFO
 	pwd = os.path.realpath('.')
-	if 'GITREPOS_DIR' in os.environ:
-		git_srcs_repos_dir = os.environ['GITREPOS_DIR']
+	if 'SRCREPOS_DIR' in os.environ:
+		git_srcs_repos_dir = os.environ['SRCREPOS_DIR']
 	else:
-		git_srcs_repos_dir = os.path.join(os.environ['HOME'], 'gitsrcs')
+		git_srcs_repos_dir = os.path.join(os.environ['HOME'], 'srcrepos')
 	os.makedirs(git_srcs_repos_dir, exist_ok=True)
 	if not os.path.exists(os.path.join(pwd, 'spec')):
 		raise FileNotFoundError("spec file does not exist.")
