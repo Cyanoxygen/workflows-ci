@@ -98,6 +98,18 @@ def parse_src_kvs(val: str) -> list[dict]:
 	return srcs
 
 
+def parse_svn_info(s: str) -> dict:
+	res = {}
+	for i in s.split('\n'):
+		sp = i.split(':')
+		if len(sp) != 1 and sp[0] != '':
+			k = sp[0].strip()
+			v = sp[1].strip()
+			res[k] = v
+			print(res)
+	return res
+
+
 def git_fetch_head(url: str, ref: str, git_srcs_dir: str) -> str:
 	'''
 	We need to fetch the latest revision and the nearest tag.
@@ -136,16 +148,65 @@ def git_fetch_head(url: str, ref: str, git_srcs_dir: str) -> str:
 		raise Exception(f'Failed to fetch {url}.')
 	return commit
 
+def svn_fetch_head(url: str, git_srcs_dir: str) -> str:
+	commit = ''
+	try:
+		url_sha256 = hashlib.sha256(url.encode()).digest().hex()
+		repo_path = os.path.join(git_srcs_dir, url_sha256)
+		logger.info('Updating SVN repository {} for {}...'.format(repo_path, url))
+		if not os.path.exists(os.path.join(repo_path, '.svn')):
+			logger.info('Checking out SVN tree {} to path {}...'.format(url, repo_path))
+			subprocess.run(
+				args=['svn', 'checkout', '--quiet', url, repo_path],
+				stderr=subprocess.DEVNULL,
+				stdout=subprocess.DEVNULL,
+				check=True
+			)
+		else:
+			subprocess.run(
+				args=['svn', 'upgrade', '--quiet'],
+				check=True,
+				cwd=repo_path
+			)
+			subprocess.run(
+				args=['svn', 'update', '--quiet'],
+				check=True,
+				cwd=repo_path
+			)
+		s = subprocess.run(
+			args=['env', 'LANG=C', 'svn', 'info', '-r', 'HEAD'],
+			stdout=subprocess.PIPE,
+			check=True,
+			cwd=repo_path
+		)
+
+		s = s.stdout.decode("utf-8")
+		s = parse_svn_info(s)
+		print(s)
+		s = s['Revision']
+		commit = s
+		print(commit)
+		return commit
+
+	except subprocess.CalledProcessError:
+		raise Exception(f'Can not check latest commit for ref {url}:{ref}. git-ls-remote exited with failure.')
+	except Exception:
+		raise Exception(f'Failed to fetch {url}.')
+
+
 
 def check_for_update(parsed_srcs: dict, git_srcs_dir: str) -> int:
 	logger.info('Checking for updates of all Git sources...')
 	count = 0
 	for src in parsed_srcs:
-		if src['name'] != 'git':
+		if src['name'] != 'git' and src['name'] != 'svn':
 			continue
 		logger.info(f'Checking {src["url"]}...')
 		ref = 'master' if 'branch' not in src else src['branch']
-		commit_id = git_fetch_head(src['url'], ref, git_srcs_dir)
+		if src['name'] == 'git':
+			commit_id = git_fetch_head(src['url'], ref, git_srcs_dir)
+		elif src['name'] == 'svn':
+			commit_id = svn_fetch_head(src['url'], git_srcs_dir)
 		if 'commit' in src and commit_id.startswith(src['commit']):
 			logger.info(f'Source {src["url"]} is up to date.')
 			continue
