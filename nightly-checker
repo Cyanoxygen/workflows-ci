@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime;
 
 # This script only modifies SRCS and VER.
 keys_to_modify = ['VER', 'SRCS']
@@ -101,12 +102,11 @@ def parse_src_kvs(val: str) -> list[dict]:
 def parse_svn_info(s: str) -> dict:
 	res = {}
 	for i in s.split('\n'):
-		sp = i.split(':')
+		sp = i.split(':', 1)
 		if len(sp) != 1 and sp[0] != '':
 			k = sp[0].strip()
 			v = sp[1].strip()
 			res[k] = v
-			print(res)
 	return res
 
 
@@ -182,10 +182,12 @@ def svn_fetch_head(url: str, git_srcs_dir: str) -> str:
 
 		s = s.stdout.decode("utf-8")
 		s = parse_svn_info(s)
-		print(s)
-		s = s['Revision']
-		commit = s
-		print(commit)
+		commit = s['Revision']
+		date = s['Last Changed Date']
+		dd = datetime.strptime(date, '%Y-%m-%d %H:%M:%S %z')
+		t = dd.timestamp()
+		print(t)
+		
 		return commit
 
 	except subprocess.CalledProcessError:
