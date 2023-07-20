@@ -156,7 +156,7 @@ def hg_fetch_head(url: str, git_srcs_dir: str) -> str:
 			)
 		else:
 			subprocess.run(
-				args=['hg', 'pull', '-quiet'],
+				args=['hg', 'pull'],
 				check=True,
 				cwd=repo_path
 			)
@@ -166,6 +166,21 @@ def hg_fetch_head(url: str, git_srcs_dir: str) -> str:
 			check=True,
 			cwd=repo_path
 		).stdout.decode().strip()
+		num = subprocess.run(
+			args=['hg', 'id', '-in'],
+			stdout=subprocess.PIPE,
+			check=True,
+			cwd=repo_path
+		).stdout.decode().strip()
+		date = subprocess.run(
+			args=['hg', 'log', '-r1', '--template', '{date}'],
+			stdout=subprocess.PIPE,
+			check=True,
+			cwd=repo_path
+		).stdout.decode().strip()
+		print(num)
+		print(date)
+		
 
 	except subprocess.CalledProcessError:
 		raise Exception(f'Can not check latest commit for ref {url}. git-ls-remote exited with failure.')
