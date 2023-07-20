@@ -378,7 +378,7 @@ def check_for_update(parsed_srcs: list[dict], base_ver: str) -> str:
 
 
 def main():
-	logger.level = logger.DEBUG
+	logger.level = logger.INFO
 	pwd = os.path.realpath('.')
 	if not os.path.exists(os.path.join(pwd, 'spec')):
 		raise FileNotFoundError("spec file does not exist.")
