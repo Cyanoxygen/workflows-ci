@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+from xml.etree import ElementTree as ET
+
 import datetime
 import hashlib
 import os
@@ -109,7 +112,7 @@ class VCSSource:
 			return None
 		if src_dict.get("name") == "git":
 			# Branch
-			ref = src_dict['branch'] if 'branch' in src_dict else 'master'
+			ref = src_dict['branch'] if 'branch' in src_dict else None
 			# Last recorded commit
 			last_rev = src_dict['commit'] if 'commit' in src_dict else None
 			return GitSource(src_dict['url'], ref, last_rev)
@@ -145,7 +148,9 @@ class VCSSource:
 		'''
 		Returns whether if the repository has updates, by comparing between the latest commit and the last recorded commit.
 		'''
-		raise NotImplementedError
+		if not self.last_rev:
+			return True
+		return not self.commit.startswith(self.last_rev)
 
 	def check_and_get_output(self, args: list) -> str:
 		return subprocess.run(
@@ -154,6 +159,12 @@ class VCSSource:
 			check=True,
 			cwd=self.repo_path
 		).stdout.decode().strip()
+
+	def __repr__(self) -> str:
+		return f"(VCS Source ({self.vcs_type}) at {self.repo_path}, from '{self.repo_url}')"
+
+	def __str__(self) -> str:
+		return self.to_version_str()
 
 class GitSource(VCSSource):
 	vcs_type = 'git'
@@ -168,11 +179,17 @@ class GitSource(VCSSource):
 		try:
 			if not os.path.exists(os.path.join(self.repo_path, '.git')):
 				logger.info('checking out git tree {} to path {}...'.format(self.repo_url, self.repo_path))
-				self.check_and_get_output(args=['git', 'clone', '--quiet', '-b', self.ref, '--depth', '1', self.repo_url, self.repo_path])
+				if self.ref:
+					self.check_and_get_output(args=['git', 'clone', '--quiet', '-b', self.ref, self.repo_url, self.repo_path])
+				else:
+					self.check_and_get_output(args=['git', 'clone', '--quiet', self.repo_url, self.repo_path])
 			else:
 				logger.info('updating git repository {} for {}...'.format(self.repo_path, self.repo_url))
 				self.check_and_get_output(args=['git', 'fetch', 'origin'])
-				self.check_and_get_output(args=['git', 'pull', '--ff-only', 'origin', self.ref])
+				if self.ref:
+					self.check_and_get_output(args=['git', 'pull', '--ff-only', 'origin', self.ref])
+				else:
+					self.check_and_get_output(args=['git', 'pull', '--ff-only', 'origin'])
 			self.commit = self.check_and_get_output(args=['git', 'rev-parse', 'HEAD'])
 			self.short_commit = self.check_and_get_output(args=['git', 'rev-parse', '--short', self.commit])
 			self.revision = self.check_and_get_output(args=['git', 'rev-list', '--count', self.commit])
@@ -189,28 +206,84 @@ class GitSource(VCSSource):
 	def to_version_str(self: VCSSource) -> str:
 		return "{0}+{1}{2}.r{3}.{4}".format(self.base_ver, self.short_vcs_type, self.commit_date_str, self.revision, self.short_commit)
 
-	def has_update(self) -> bool:
-		if not self.last_rev:
-			return True
-		return not self.commit.startswith(self.last_rev)
-
 
 class BazzarSource(VCSSource):
 	vcs_type = 'bazzar'
 	short_vcs_type = 'bzr'
-	pass
-
 
 class MercurialSource(VCSSource):
 	vcs_type = 'mercurial'
 	short_vcs_type = 'hg'
-	pass
+
+	def __init__(self, repo_url: str, ref: str, last_rev: str) -> None:
+		super().__init__(repo_url, ref, last_rev)
+
+	def fetch_ref_head(self) -> str:
+		try:
+			if not os.path.exists(os.path.join(self.repo_path, '.hg')):
+				logger.info(f"Checking out ${self.vcs_type} source {self.repo_url} to {self.repo_path} ...")
+				self.check_and_get_output(['hg', '--quiet', 'clone', self.repo_url, self.repo_path])
+			else:
+				logger.info(f"Updating {self.vcs_type} source {self.repo_url} at {self.repo_path} ...")
+				self.check_and_get_output(['hg', 'pull'])
+		except subprocess.CalledProcessError:
+			raise RuntimeError(f"Failed to checkout ${self.vcs_type} source.")
+		try:
+			self.commit = self.check_and_get_output(['hg', 'id', '-i'])
+			self.revision = self.check_and_get_output(['hg', 'id', '-n'])
+			self.commit_date_timestamp = int(float(self.check_and_get_output(['hg', 'log', '-r', '-1', '--template', '{date}'])))
+			self.commit_date_str = datetime.datetime.strftime(datetime.datetime.fromtimestamp(self.commit_date_timestamp), '%Y%m%d')
+		except subprocess.CalledProcessError:
+			raise RuntimeError(f"Failed to retreive information of the repository {self.repo_url}.")
+
+	def to_version_str(self) -> str:
+		return '{0}+{1}{2}.r{3}.{4}'.format(self.base_ver, self.short_vcs_type, self.commit_date_str, self.revision, self.commit)
 
 
 class SubVersionSource(VCSSource):
 	vcs_type = 'subversion'
 	short_vcs_type = 'svn'
-	pass
+
+	# Parse the output of SubVersion.
+	def svn_parse_info(self, xml_content: str):
+		# Get the information we need, from `svn --xml info`.
+		# root is node "info".
+		root = ET.fromstring(xml_content)
+		commit = root.find('./entry/commit')
+		self.revision = commit.get('revision')
+		self.commit = self.revision
+		formatted_date_str = commit.find('./date').text
+		# Once we updated to Python 3.11 or later, we can use fromisoformat().
+		commit_date = datetime.datetime.strptime(formatted_date_str, '%Y-%m-%dT%H:%M:%S.%f%z')
+		self.commit_date_timestamp = commit_date.timestamp()
+		self.commit_date_str = commit_date.strftime('%Y%m%d')
+
+	def fetch_ref_head(self) -> str:
+		try:
+			if not os.path.exists(os.path.join(self.repo_path, '.svn')):
+				logger.info(f"Checking out {self.vcs_type} source {self.repo_url} to {self.repo_path} ...")
+				self.check_and_get_output(['svn', 'co', self.repo_url, self.repo_path])
+			else:
+				logger.info(f"Updating {self.vcs_type} source at {self.repo_path} ..." )
+				self.check_and_get_output(['svn', '--quiet', 'update'])
+		except subprocess.CalledProcessError:
+			raise RuntimeError(f"Failed to checkout or update the {self.vcs_type} tree at {self.repo_path}.")
+		try:
+			xml_content = self.check_and_get_output(['svn', '--xml', 'info'])
+			self.svn_parse_info(xml_content)
+		except subprocess.CalledProcessError:
+			raise RuntimeError(f"Unable to retreive the information of {self.vcs_type} source at {self.repo_path}.")
+
+	def has_update(self) -> bool:
+		if not self.last_rev:
+			return True
+		else:
+			int_prev_rev = int(self.last_rev)
+			int_current_rev = int(self.revision)
+			return int_current_rev > int_prev_rev
+
+	def to_version_str(self) -> str:
+		return "{0}+{1}{2}.r{3}".format(self.base_ver, self.short_vcs_type, self.commit_date_str, self.revision)
 
 
 def parse_kvs(content: list[str]) -> dict:
@@ -223,7 +296,7 @@ def parse_kvs(content: list[str]) -> dict:
 			continue
 		if line.startswith('#'):
 			continue
-		lastline = ' '.join([lastline.rstrip().rstrip('\\'), line]).lstrip()
+		lastline = ''.join([lastline.rstrip().rstrip('\\'), line]).lstrip()
 		if not line.rstrip().endswith('\\'):
 			logger.debug('Appending line: {}'.format(lastline))
 			parsed_lines.append(lastline)
@@ -279,6 +352,7 @@ def check_for_update(parsed_srcs: list[dict], base_ver: str) -> str:
 		source = VCSSource.create(src)
 		if not source:
 			logger.info(f'{src["url"]} is not a VCS source. Skipping.')
+			continue
 		if not primary_source:
 			primary_source = source
 			primary_source.base_ver = base_ver
@@ -304,7 +378,7 @@ def check_for_update(parsed_srcs: list[dict], base_ver: str) -> str:
 
 
 def main():
-	logger.level = logger.INFO
+	logger.level = logger.DEBUG
 	pwd = os.path.realpath('.')
 	if not os.path.exists(os.path.join(pwd, 'spec')):
 		raise FileNotFoundError("spec file does not exist.")
@@ -332,7 +406,7 @@ def main():
 		exit(0)
 	# Write back changes
 	parsed_kvs['VER'] = new_ver
-	logger.info("Writting back changes...")
+	logger.info("Writing back changes...")
 	constructed_srcs_values= []
 	for src in parsed_srcs:
 		if len(src) == 2:
@@ -344,7 +418,7 @@ def main():
 			option_str = ';'.join(f"{k}={src[k]}" for k in keys)
 			entry = f'{src["name"]}::{option_str}::{src["url"]}'
 		constructed_srcs_values.append(entry)
-	constructed_srcs = ' \\\n\t'.join(constructed_srcs_values)
+	constructed_srcs = ' \\\n      '.join(constructed_srcs_values)
 	parsed_kvs['SRCS'] = constructed_srcs
 	with open(os.path.join(pwd, 'spec'), 'w') as f:
 		for key in parsed_kvs:
@@ -354,9 +428,9 @@ def main():
 				f.write('{}="{}"\n'.format(key, parsed_kvs[key]))
 			else:
 				# Replace \n with \\\n + number of whitespaces.
-				expanded_val = parsed_kvs[key].replace('\n','\\\n')
+				expanded_val = parsed_kvs[key].replace(' ',' \\\n\t')
 				f.write('{}={}\n'.format(key, expanded_val))
-	logger.info("Done writting changes. Have fun!")
+	logger.info("Done writing changes. Have fun!")
 	sys.exit(0)
 
 
