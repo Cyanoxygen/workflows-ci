@@ -72,10 +72,11 @@ if [ "$NOCONFIG_GIT" == "0" ] ; then
 	git config user.name "AOSC CI"
 	git config user.email "ci@aosc.io"
 fi
-
-i "Configuring acbs..."
-sudo cp /etc/acbs/forest.conf /etc/acbs/forest.conf.bak
-echo -e "[default]\nlocation = $(realpath $TREEDIR)" | sudo tee /etc/acbs/forest.conf
+if [ ! "$NIGHTLY" == "1" ]; then
+	i "Configuring acbs..."
+	sudo cp /etc/acbs/forest.conf /etc/acbs/forest.conf.bak
+	echo -e "[default]\nlocation = $(realpath $TREEDIR)" | sudo tee /etc/acbs/forest.conf
+fi
 
 i "Checking out to branch $BRANCH..."
 git checkout $BRANCH
