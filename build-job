@@ -3,7 +3,7 @@
 
 # global variables - can be specified outside of the script
 # Ciel workspace
-CIEL_ROOT=${CIEL_ROOT:$PWD}
+CIEL_ROOT=${CIEL_ROOT:-$PWD}
 # Target branch
 TARGET_BRANCH=${TARGET_BRANCH:-stable}
 # Batch ID (if resuming from a previous session)
@@ -133,30 +133,24 @@ fi
 
 # Record the packages list
 # TODO handle groups - finished
-if [ ! "$BATCHID" ] ; then
-	i "Checking packages..."
-	echo -n "Packages: "
-	for i in "$@" ; do
-		if [[ "$i" == groups/* ]] ; then
-			# Expand the groups
-			i "\nExpanding group $i..."
-			echo -n "$i: "
-			for j in `cat $CIEL_ROOT/TREE/$i` ; do
-				_package=("${j/#*\//}")
-				echo -n "$_package "
-				PACKAGES+=($_package)
-			done
-			echo -en "\nPackages: "
-		else
-			echo -n "$i "
-			PACKAGES+=("$i")
-		fi
-	done
-else
-	if [ "$#" -gt 0 ] ; then
-		warn "You specified both BATCHID and packages. Packages specified later will be ignored."
+i "Checking packages..."
+echo -n "Packages: "
+for i in "$@" ; do
+	if [[ "$i" == groups/* ]] ; then
+		# Expand the groups
+		i "\nExpanding group $i..."
+		echo -n "$i: "
+		for j in `cat $CIEL_ROOT/TREE/$i` ; do
+			_package=("${j/#*\//}")
+			echo -n "$_package "
+			PACKAGES+=($_package)
+		done
+		echo -en "\nPackages: "
+	else
+		echo -n "$i "
+		PACKAGES+=("$i")
 	fi
-fi
+done
 echo ""
 i "Preparing to build..."
 # TODO Add resume functionality
@@ -168,13 +162,15 @@ if [ ! "$BATCHID" ] ; then
 	BATCHID="$(date '+%Y%m%d%H%M')-$_rand"
 	i "BatchID = $BATCHID"
 else
-	i "Trying to resume from previous session..."
 	if [ ! -e "$CIEL_ROOT/ci-builds/$BATCHID" -o \
 		! -e "$CIEL_ROOT/ci-builds/$BATCHID/status" -o \
 		! -e "$CIEL_ROOT/ci-builds/$BATCHID/list" ] ; then
 		i "There is no such session with batch ID '$BATCHID' found in this Ciel workspace."
 		i "Starting over."
 	else
+		i "Trying to resume from previous session..."
+		w "You specified both of the BATCHID and packages. Packages will be ignored."
+		PACKAGES=()
 		_curpkg="$(cat $CIEL_ROOT/ci-builds/$BATCHID/status)"
 		_list="$(cat $CIEL_ROOT/ci-builds/$BATCHID/list)"
 		_found=0
