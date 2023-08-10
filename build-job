@@ -172,28 +172,29 @@ else
 	if [ ! -e "$CIEL_ROOT/ci-builds/$BATCHID" -o \
 		! -e "$CIEL_ROOT/ci-builds/$BATCHID/status" -o \
 		! -e "$CIEL_ROOT/ci-builds/$BATCHID/list" ] ; then
-		e "There is no such session with batch ID '$BATCHID' found in this Ciel workspace."
-		bail "Make sure you are using the correct Ciel workspace, and the batch ID does exist."
-	fi
-	_curpkg="$(cat $CIEL_ROOT/ci-builds/$BATCHID/status)"
-	_list="$(cat $CIEL_ROOT/ci-builds/$BATCHID/list)"
-	_found=0
-	if [ "$_curpkg" == "success" ] ; then
-		i "This batch was successfully built! Exiting."
-		i "If this was a mistake, please modify the status file to the package you want to build."
-		exit 0
-	fi
-	for i in $_list ; do
-		if [ "$i" == "$_curpkg" ] ; then
-			_found=1
+		i "There is no such session with batch ID '$BATCHID' found in this Ciel workspace."
+		i "Starting over."
+	else
+		_curpkg="$(cat $CIEL_ROOT/ci-builds/$BATCHID/status)"
+		_list="$(cat $CIEL_ROOT/ci-builds/$BATCHID/list)"
+		_found=0
+		if [ "$_curpkg" == "success" ] ; then
+			i "This batch was successfully built! Exiting."
+			i "If this was a mistake, please modify the status file to the package you want to build."
+			exit 0
 		fi
-		if [ $_found == "1" ] ; then
-			PACKAGES+=($i)
-		fi
-	done
-	RESUME=$BATCHID
-	i "Recovered list of packages: ${PACKAGES[@]}"
-	i "Last packages build attempt: $_curpkg"
+		for i in $_list ; do
+			if [ "$i" == "$_curpkg" ] ; then
+				_found=1
+			fi
+			if [ $_found == "1" ] ; then
+				PACKAGES+=($i)
+			fi
+		done
+		RESUME=$BATCHID
+		i "Recovered list of packages: ${PACKAGES[@]}"
+		i "Last packages build attempt: $_curpkg"
+	fi
 fi
 
 i "Creating artifact output directory..."
@@ -247,11 +248,7 @@ echo "success" | sudo tee $statfile > /dev/null
 
 i "Copying artifacts..."
 if [ ! -e $CIEL_ROOT/OUTPUT-$TARGET_BRANCH ] ; then
-	warn "Can not locate the corresponding OUTPUT directory - copying everything."
-	for f in `find $CIEL_ROOT -maxdepth 1 -type d -name 'OUTPUT-*'` ; do
-		cd $i
-		find . -type f -exec install -Dvm644 {} $ARTIFACT_OUT_DIR/{} \;
-	done
+	bail "Cannot locate the corresponding OUTPUT directory, exiting."
 else
 	cd $CIEL_ROOT/OUTPUT-$TARGET_BRANCH
 	find . -type f -exec install -Dvm644 {} $ARTIFACT_OUT_DIR/{} \;
@@ -259,7 +256,7 @@ fi
 
 i "Copying logs..."
 cd $CIEL_ROOT/ci-builds/$BATCHID
-find -maxdepth 1 -type f -exec install -Dvm644 {} $ARTIFACT_OUT_DIR/{} \;
+find -maxdepth 1 -type f -exec install -Dvm644 {} $ARTIFACT_OUT_DIR/logs/{} \;
 
 i "Job finished successfully!"
 i "Ciel workspace: $CIEL_ROOT"
