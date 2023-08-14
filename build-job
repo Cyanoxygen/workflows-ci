@@ -1,21 +1,13 @@
 #!/bin/bash
-# prepare-ciel - Script to run CIEL! unattendedly
+# build-job - use a ciel workspace to build packages
 
 # global variables - can be specified outside of the script
 # Ciel workspace
-CIEL_ROOT=${CIEL_ROOT:-$PWD}
-# Target branch
-TARGET_BRANCH=${TARGET_BRANCH:-stable}
-# Batch ID (if resuming from a previous session)
+CIEL_WORKSPACE_DIR=${CIEL_WORKSPACE_DIR:-$PWD}
+# Batch ID (if resuming from a previous session, or pre-defined)
 BATCHID=$BATCHID
 # Ciel instance to use for build
-CIEL_INSTANCE=${CIEL_INSTANCE:-stable}
-# Do not clean up Ciel workspace and Git tree (any non-null value is true)
-NOCLEAN=$NOCLEAN
-# Do not update Git tree
-NOUPDATE=$NOUPDATE
-# Do not update base OS of the Ciel workspace
-NOOSUPDATE=$NOOSUPDATE
+CIEL_INSTANCE=${CIEL_INSTANCE:-main}
 # Artifact output directory
 ARTIFACT_OUT_DIR=${ARTIFACT_OUT_DIR}
 
@@ -23,6 +15,8 @@ ARTIFACT_OUT_DIR=${ARTIFACT_OUT_DIR}
 PACKAGES=()
 # Used to let the script know we are resuming
 RESUME=
+# Status
+STATUS=none
 
 if [ ! -e "$PWD"/data/tracked-packages ] ; then
 	echo "Unable to find the tracked packages file."
@@ -31,6 +25,33 @@ if [ ! -e "$PWD"/data/tracked-packages ] ; then
 fi
 
 source common/utils.bash
+
+save_artifacts() {
+	i "Copying artifacts..."
+	echo "$CIEL_WORKSPACE_DIR/OUTPUT-$TARGET_BRANCH"
+	ls "$CIEL_WORKSPACE_DIR/OUTPUT-$TARGET_BRANCH"
+	if [ ! -e $CIEL_WORKSPACE_DIR/OUTPUT-$TARGET_BRANCH ] ; then
+		bail "Cannot locate the corresponding OUTPUT directory, exiting."
+	else
+		cd $CIEL_WORKSPACE_DIR/OUTPUT-$TARGET_BRANCH
+		find . -type f -exec install -Dvm644 {} $ARTIFACT_OUT_DIR/{} \;
+	fi
+	
+	i "Copying logs..."
+	cd $CIEL_WORKSPACE_DIR/ci-builds/$BATCHID
+	find -maxdepth 1 -type f -exec install -Dvm644 {} $ARTIFACT_OUT_DIR/logs/{} \;
+	
+	i "Job finished successfully!"
+	i "Ciel workspace: $CIEL_WORKSPACE_DIR"
+	i "Batch ID: $BATCHID"
+	i "CI log directory: $CIEL_WORKSPACE_DIR/ci-builds/$BATCHID"
+	i "Artifact output directory: $ARTIFACT_OUT_DIR"
+	i "Exporting info..."
+	echo "ARTIFACT_DIR=$ARTIFACT_OUT_DIR" | tee -a "$GITHUB_OUTPUT"
+	echo "STATUS=$STATUS" | tee -a "$GITHUB_OUTPUT"
+
+	unset _rand _curpkg _pkglist CIEL_WORKSPACE_DIR RESUME PACKAGES TARGET_BRANCH statfile listfile
+}
 
 detect_ciel() {
 	# Simulate ciel's behavior (but half of it)
@@ -43,7 +64,7 @@ detect_ciel() {
 	fi
 
 	if [ -e "$_path/.ciel" ] ; then
-		CIEL_ROOT=$_path
+		CIEL_WORKSPACE_DIR=$_path
 		return 0
 	elif [ "$_path" == "/" ] ; then
 		e "Unable to detect ciel workspace: Hit the filesystem ceiling!"
@@ -60,27 +81,19 @@ if [ $# == "0" ] ; then
 	fi
 fi
 
-detect_ciel $CIEL_ROOT
-i "Detected Ciel workspace: $CIEL_ROOT"
+detect_ciel $CIEL_WORKSPACE_DIR
+i "Detected Ciel workspace: $CIEL_WORKSPACE_DIR"
 
 # Try to verify Ciel workspace status
-cd $CIEL_ROOT
+cd $CIEL_WORKSPACE_DIR
 ninstances="$(ciel list &>1 | wc -l)"
 if [ "$(($ninstances - 1))" == "0" -o "$?" != "0" ] ; then
 	bail "Please set up your Ciel workspace first"
 fi
 
-# Try to access Git tree
-cd $CIEL_ROOT/TREE
-git status > /dev/null
-if [ "$?" != "0" ] ; then
-	e "Can not access the Git tree under $CIEL_ROOT/TREE."
-	bail "Make sure you are running this script with CORRECT user."
-fi
-
 # Fill $TARGET_BRANCH
 if ! [ "$TARGET_BRANCH" ] ; then
-		cd $CIEL_ROOT/TREE
+		cd $CIEL_WORKSPACE_DIR/TREE
 		TARGET_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 fi
 if [ "$TARGET_BRANCH" == "HEAD" ] ; then
@@ -94,43 +107,6 @@ if [ "$BATCHID" ] ; then
 	NOCLEAN=1
 fi
 
-# Clean
-if ! [ "$NOCLEAN" ] ; then
-	i "Cleaning Ciel OUTPUT directories under $CIEL_ROOT..."
-	cd $CIEL_ROOT
-	for i in `find $CIEL_ROOT -maxdepth 1 -type d -name 'OUTPUT*' -printf '%P\n'` ; do
-		i "Removing OUTPUT directory $i..."
-		sudo rm -rv $i
-	done
-
-	i "Cleaning Git Tree..."
-	cd $CIEL_ROOT/TREE
-	git clean -dxf
-fi
-
-# Update Git Tree
-if ! [ "$NOUPDATE" ] ; then
-	i "Updating Git tree at $CIEL_ROOT/TREE..."
-	cd $CIEL_ROOT/TREE
-	git fetch
-	git checkout $TARGET_BRANCH > /dev/null
-	if [ "$?" != "0" ] ; then
-		bail "Can not checkout to branch '$TARGET_BRANCH'."
-	fi
-	git pull --rebase
-	if [ "$?" != "0" ] ; then
-		bail "Unable to update target branch $TARGET_BRANCH."
-	fi
-fi
-
-i "Preparing Ciel..."
-i "Updating OS Container..."
-if ! [ "$NOOSUPDATE" ] ; then
-	cd $CIEL_ROOT
-	sudo ciel update-os
-	[ "$?" != "0" ] && bail "Unable to update container OS."
-fi
-
 # Record the packages list
 # TODO handle groups - finished
 i "Checking packages..."
@@ -140,7 +116,7 @@ for i in "$@" ; do
 		# Expand the groups
 		i "\nExpanding group $i..."
 		echo -n "$i: "
-		for j in `cat $CIEL_ROOT/TREE/$i` ; do
+		for j in `cat $CIEL_WORKSPACE_DIR/TREE/$i` ; do
 			_package=("${j/#*\//}")
 			echo -n "$_package "
 			PACKAGES+=($_package)
@@ -162,17 +138,17 @@ if [ ! "$BATCHID" ] ; then
 	BATCHID="$(date '+%Y%m%d%H%M')-$_rand"
 	i "BatchID = $BATCHID"
 else
-	if [ ! -e "$CIEL_ROOT/ci-builds/$BATCHID" -o \
-		! -e "$CIEL_ROOT/ci-builds/$BATCHID/status" -o \
-		! -e "$CIEL_ROOT/ci-builds/$BATCHID/list" ] ; then
+	if [ ! -e "$CIEL_WORKSPACE_DIR/ci-builds/$BATCHID" -o \
+		! -e "$CIEL_WORKSPACE_DIR/ci-builds/$BATCHID/status" -o \
+		! -e "$CIEL_WORKSPACE_DIR/ci-builds/$BATCHID/list" ] ; then
 		i "There is no such session with batch ID '$BATCHID' found in this Ciel workspace."
 		i "Starting over."
 	else
 		i "Trying to resume from previous session..."
-		w "You specified both of the BATCHID and packages. Packages will be ignored."
+		warn "You specified both of the BATCHID and packages. Packages will be ignored."
 		PACKAGES=()
-		_curpkg="$(cat $CIEL_ROOT/ci-builds/$BATCHID/status)"
-		_list="$(cat $CIEL_ROOT/ci-builds/$BATCHID/list)"
+		_curpkg="$(cat $CIEL_WORKSPACE_DIR/ci-builds/$BATCHID/status)"
+		_list="$(cat $CIEL_WORKSPACE_DIR/ci-builds/$BATCHID/list)"
 		_found=0
 		if [ "$_curpkg" == "success" ] ; then
 			i "This batch was successfully built! Exiting."
@@ -195,71 +171,62 @@ fi
 
 i "Creating artifact output directory..."
 if [ ! "$ARTIFACT_OUT_DIR" ] ; then
-	ARTIFACT_OUT_DIR=$CIEL_ROOT/ci-builds/$BATCHID/out
+	ARTIFACT_OUT_DIR=$CIEL_WORKSPACE_DIR/ci-builds/$BATCHID/out
 fi
-sudo mkdir -pv $ARTIFACT_OUT_DIR || bail "Can not create artifact output directory."
-sudo ln -sfv $ARTIFACT_OUT_DIR $CIEL_ROOT/ci-builds/latest-out || bail "Can not create link to the artifact out directory."
-sudo touch $ARTIFACT_OUT_DIR/batchid || bail "Can not create files in the artifact output directory."
-echo $BATCHID | sudo tee $ARTIFACT_OUT_DIR/batchid > /dev/null || bail "Can not write to the files in the artifact output directory."
+mkdir -pv $ARTIFACT_OUT_DIR || bail "Can not create artifact output directory."
+ln -sfv $ARTIFACT_OUT_DIR $CIEL_WORKSPACE_DIR/ci-builds/latest-out || bail "Can not create link to the artifact out directory."
+touch $ARTIFACT_OUT_DIR/batchid || bail "Can not create files in the artifact output directory."
+echo $BATCHID | tee $ARTIFACT_OUT_DIR/batchid > /dev/null || bail "Can not write to the files in the artifact output directory."
 
 # Create list and status file
-sudo mkdir -pv $CIEL_ROOT/ci-builds/$BATCHID
-statfile="$CIEL_ROOT/ci-builds/$BATCHID/status"
-listfile="$CIEL_ROOT/ci-builds/$BATCHID/list"
+mkdir -pv $CIEL_WORKSPACE_DIR/ci-builds/$BATCHID
+statfile="$CIEL_WORKSPACE_DIR/ci-builds/$BATCHID/status"
+listfile="$CIEL_WORKSPACE_DIR/ci-builds/$BATCHID/list"
 
 i "Updating status..."
-sudo touch $CIEL_ROOT/ci-builds/batches
-sudo touch $CIEL_ROOT/ci-builds/latest-id
-sudo ln -sfv $BATCHID $CIEL_ROOT/ci-builds/latest
-echo $BATCHID | sudo tee -a $CIEL_ROOT/ci-builds/batches > /dev/null
-echo $BATCHID | sudo tee $CIEL_ROOT/ci-builds/latest-id > /dev/null
+touch $CIEL_WORKSPACE_DIR/ci-builds/batches
+touch $CIEL_WORKSPACE_DIR/ci-builds/latest-id
+ln -sfv $BATCHID $CIEL_WORKSPACE_DIR/ci-builds/latest
+echo $BATCHID | tee -a $CIEL_WORKSPACE_DIR/ci-builds/batches > /dev/null
+echo $BATCHID | tee $CIEL_WORKSPACE_DIR/ci-builds/latest-id > /dev/null
 
 if [ ! $RESUME ] ; then
 	i "Creating list and status file..."
-	sudo touch $statfile || bail "Unable to create status file."
-	sudo touch $listfile || bail "Unable to create list file."
-	echo "${PACKAGES[@]}" | sudo tee $listfile > /dev/null
+	touch $statfile || bail "Unable to create status file."
+	touch $listfile || bail "Unable to create list file."
+	echo "${PACKAGES[@]}" | tee $listfile > /dev/null
 fi
 
-i "Entering $CIEL_ROOT..."
-cd $CIEL_ROOT
+trap save_artifacts EXIT
+
+i "Entering $CIEL_WORKSPACE_DIR..."
+cd $CIEL_WORKSPACE_DIR
+cnt=0
 for i in ${PACKAGES[@]} ; do
 	i "Building $i..."
-	echo "$i" | sudo tee $statfile > /dev/null
+	echo "$i" | tee $statfile > /dev/null
 	_LANG=$LANG
 	export LANG=C
 	safename=${i/\//_}
-	sudo script -qc "ciel build -i $CIEL_INSTANCE $i" $CIEL_ROOT/ci-builds/$BATCHID/$safename.log
+	script -eqc "sudo LANG=C ciel build -i $CIEL_INSTANCE $i" $CIEL_WORKSPACE_DIR/ci-builds/$BATCHID/$safename.log
 	if [ "$?" != "0" ] ; then
+		if [ "$cnt" == "0" ] ; then
+			STATUS=fail
+		else
+			STATUS=partial
+		fi
 		export LANG=$_LANG
 		e "Error building package $i ^o^"
-		e "Please checkout the log $CIEL_ROOT/ci-builds/$BATCHID/$i.log for details."
-		bail "Can not continue. Bailing out."
+		e "Please checkout the log $CIEL_WORKSPACE_DIR/ci-builds/$BATCHID/$i.log for details."
+		break
 	fi
+	cnt=$(($cnt + 1))
 done
 export LANG=$_LANG
-
-i "Done! ${#PACKAGES[@]} packages built"
-echo "success" | sudo tee $statfile > /dev/null
-
-i "Copying artifacts..."
-if [ ! -e $CIEL_ROOT/OUTPUT-$TARGET_BRANCH ] ; then
-	bail "Cannot locate the corresponding OUTPUT directory, exiting."
+if [ "$cnt" == ${#PACKAGES[@]} ] ; then
+	i "Done! ${#PACKAGES[@]} packages built"
+	echo "success" | tee $statfile > /dev/null
 else
-	cd $CIEL_ROOT/OUTPUT-$TARGET_BRANCH
-	find . -type f -exec install -Dvm644 {} $ARTIFACT_OUT_DIR/{} \;
+	e "Some of the packages has failed."
 fi
-
-i "Copying logs..."
-cd $CIEL_ROOT/ci-builds/$BATCHID
-find -maxdepth 1 -type f -exec install -Dvm644 {} $ARTIFACT_OUT_DIR/logs/{} \;
-
-i "Job finished successfully!"
-i "Ciel workspace: $CIEL_ROOT"
-i "Batch ID: $BATCHID"
-i "CI log directory: $CIEL_ROOT/ci-builds/$BATCHID"
-i "Artifact output directory: $ARTIFACT_OUT_DIR"
-
-unset _rand _curpkg _pkglist CIEL_ROOT RESUME PACKAGES TARGET_BRANCH statfile listfile
-
 exit 0
