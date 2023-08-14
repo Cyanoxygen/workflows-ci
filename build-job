@@ -16,7 +16,7 @@ PACKAGES=()
 # Used to let the script know we are resuming
 RESUME=
 # Status
-STATUS=none
+STATUS=fail
 
 if [ ! -e "$PWD"/data/tracked-packages ] ; then
 	echo "Unable to find the tracked packages file."
@@ -210,11 +210,7 @@ for i in ${PACKAGES[@]} ; do
 	safename=${i/\//_}
 	script -eqc "sudo LANG=C ciel build -i $CIEL_INSTANCE $i" $CIEL_WORKSPACE_DIR/ci-builds/$BATCHID/$safename.log
 	if [ "$?" != "0" ] ; then
-		if [ "$cnt" == "0" ] ; then
-			STATUS=fail
-		else
-			STATUS=partial
-		fi
+		STATUS=fail
 		export LANG=$_LANG
 		e "Error building package $i ^o^"
 		e "Please checkout the log $CIEL_WORKSPACE_DIR/ci-builds/$BATCHID/$i.log for details."
@@ -225,6 +221,7 @@ done
 export LANG=$_LANG
 if [ "$cnt" == ${#PACKAGES[@]} ] ; then
 	i "Done! ${#PACKAGES[@]} packages built"
+	STATUS=success
 	echo "success" | tee $statfile > /dev/null
 else
 	e "Some of the packages has failed."
