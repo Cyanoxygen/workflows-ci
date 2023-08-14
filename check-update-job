@@ -110,7 +110,8 @@ i "Let's see if there's any changes..."
 if ! git diff --quiet ; then
 	# There are changes
 	i "Okay, we have ${#UPDATED[@]} change(s) to commit."
-	truncate -s 0 groups/ci-batch
+	touch $TREEDIR/groups/ci-batch
+	truncate -s 0 $TREEDIR/groups/ci-batch
 	echo "${UPDATED[@]}"
 	for i in ${UPDATED[@]} ; do
 		i "Commiting $i..."
@@ -118,12 +119,12 @@ if ! git diff --quiet ; then
 		git add .
 		source ./spec
 		git commit -m "${i/#*\//}: update to $VER"
-		echo "$i" >> groups/ci-batch
+		echo "$i" >> $TREEDIR/groups/ci-batch
 		popd
 	done
 	i "Commiting batch list..."
-	git add groups/ci-batch
-	git commit -m "groups/ci-batch: refresh, $(date "-Iseconds")" groups/ci-batch
+	git add $TREEDIR/groups/ci-batch
+	git commit -m "$TREEDIR/groups/ci-batch: refresh, $(date "-Iseconds")" $TREEDIR/groups/ci-batch
 else
 	i "Nothing to commit, exiting peacefully."
 fi
