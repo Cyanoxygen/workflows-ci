@@ -89,7 +89,7 @@ i "Detected Ciel workspace: $CIEL_WORKSPACE_DIR"
 
 # Try to verify Ciel workspace status
 cd $CIEL_WORKSPACE_DIR
-ninstances="$(ciel list &>1 | wc -l)"
+ninstances="$(sudo ciel list 2>&1 | wc -l)"
 if [ "$(($ninstances - 1))" == "0" -o "$?" != "0" ] ; then
 	bail "Please set up your Ciel workspace first"
 fi
