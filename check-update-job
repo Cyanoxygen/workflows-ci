@@ -124,7 +124,7 @@ if ! git diff --quiet ; then
 	done
 	i "Commiting batch list..."
 	git add $TREEDIR/groups/ci-batch
-	git commit -m "$TREEDIR/groups/ci-batch: refresh, $(date "-Iseconds")" $TREEDIR/groups/ci-batch
+	git commit -m "groups/ci-batch: refresh, $(date "-Iseconds")" $TREEDIR/groups/ci-batch
 else
 	i "Nothing to commit, exiting peacefully."
 fi
