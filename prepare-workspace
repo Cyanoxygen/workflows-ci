@@ -1,10 +1,13 @@
-#!/bin/bash -e
+#!/bin/bash
 # prepare-workspace - prepare a unique Ciel workspace
 # Values to export:
 # - CIEL_WORKSPACE_DIR: Path to the prepared Ciel workspace.
 # - BATCHID: A string to identify the batch of the build.
 # Format of $BATCHID:
 # %Y%m%d%H%M-${RANDOM_BASE32}
+
+set -e
+set -o pipefail
 
 # Hard coded base path for Ciel workspaces:
 CIEL_WORKSPACE_BASE=$HOME/build/ciel-ci

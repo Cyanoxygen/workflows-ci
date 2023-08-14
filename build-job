@@ -26,6 +26,9 @@ fi
 
 source common/utils.bash
 
+set -e
+set -o pipefail
+
 save_artifacts() {
 	i "Copying artifacts..."
 	echo "$CIEL_WORKSPACE_DIR/OUTPUT-$TARGET_BRANCH"
