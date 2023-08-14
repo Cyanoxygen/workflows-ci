@@ -1,0 +1,108 @@
+#!/bin/bash -e
+# prepare-workspace - prepare a unique Ciel workspace
+# Values to export:
+# - CIEL_WORKSPACE_DIR: Path to the prepared Ciel workspace.
+# - BATCHID: A string to identify the batch of the build.
+# Format of $BATCHID:
+# %Y%m%d%H%M-${RANDOM_BASE32}
+
+# Hard coded base path for Ciel workspaces:
+CIEL_WORKSPACE_BASE=$HOME/build/ciel-ci
+# ABBS Tree location - should be checked out.
+ABBS_TREE_DIR=$ABBS_TREE_DIR
+# Branch
+ABBS_BRANCH=${ABBS_BRANCH:-bleeding-edge-nightly}
+
+source common/utils.bash
+
+errtrap() {
+	e "Oops! Something bad happened."
+	(
+	if [ -e $CIEL_WORKSPACE_DIR ] ; then
+		(
+		i "Cleaning up..."
+		cd $CIEL_WORKSPACE_DIR
+		ciel down &>/dev/null || true
+		)
+		sudo rm -fr $CIEL_WORKSPACE_DIR
+	fi
+	)
+	echo "STATUS=fail" >> "$GITHUB_OUTPUT" || true
+	bail "Goodbye!"	
+}
+
+# Sanity checks
+i "Ensuring everything is set up..."
+if [ ! -e "$CIEL_WORKSPACE_BASE" ] ; then
+	i "Creating base directory of managed Ciel workspaces..."
+	mkdir -pv $CIEL_WORKSPACE_BASE
+fi
+
+[ -d "$ABBS_TREE_DIR" ] || bail "$ABBS_TREE_DIR does not exist."
+
+pushd $ABBS_TREE_DIR
+if [ ! -d .git ] || ! git rev-parse --git-dir &>/dev/null ; then
+	bail "$ABBS_TREE_DIR is not an Git repository."
+fi
+if ! git branch -a | grep -q $ABBS_BRANCH ; then
+	bail "Specified branch $ABBS_BRANCH is not in the specified ABBS Tree."
+fi
+popd
+
+if [ ! -e "$GITHUB_OUTPUT" ] ; then
+	bail "GITHUB_OUTPUT is not found. Is this script running in GitHub Actions?"
+fi
+
+i "Okay, everything is good."
+trap "errtrap \$LINENO" ERR
+
+i "Generating random Batch ID..."
+_rand="$(openssl rand 5 | base32)"
+_rand=${_rand,,}
+BATCHID="$(date '+%Y%m%d%H%M')-$_rand"
+i "BatchID = $BATCHID"
+
+# Use BATCHID as Ciel workspace path name
+CIEL_WORKSPACE_DIR="${CIEL_WORKSPACE_BASE}"/"$BATCHID"
+i "Creating Ciel workspace $CIEL_WORKSPACE_DIR..."
+mkdir -vp $CIEL_WORKSPACE_DIR || bail "Can not create Ciel workspace directory."
+
+i "Entering Ciel workspace..."
+pushd $CIEL_WORKSPACE_DIR
+i "Running 'ciel new'..."
+# Make sure Ciel does not ask questions interactively
+sudo ciel new -a $ARCH | tee
+# Gain permission for Ciel created directory
+sudo chown $(id -u):$(id -g) $PWD
+sudo chown -R $(id -u):$(id -g) $PWD/TREE
+i "Checking for checked out ABBS Tree..."
+if [ -e $CIEL_WORKSPACE_DIR/TREE/.git ] ; then
+	pushd $CIEL_WORKSPACE_DIR/TREE
+		ciel_tree_remote_url=$(git remote get-url origin)
+		pushd $ABBS_TREE_DIR
+			specified_tree_remote_url=$(git remote get-url origin)
+		popd
+	popd
+	if [ "$ciel_tree_remote_url" != "$specified_tree_remote_url" ] ; then
+		i "Replacing ABBS Tree checked out by Ciel to the specified one..."
+		rm -fr $CIEL_WORKSPACE_DIR/TREE
+		git clone $ABBS_TREE_DIR $CIEL_WORKSPACE_DIR/TREE -b $ABBS_BRANCH
+	fi
+else
+	i "Checking out the ABBS Tree..."
+	git clone $ABBS_TREE_DIR $CIEL_WORKSPACE_DIR/TREE -b $ABBS_BRANCH
+fi
+
+i "Adding instance..."
+sudo ciel add main
+
+i "Updating Container OS..."
+sudo ciel update-os
+popd
+
+i "Successfully initialized Ciel workspace!"
+i "Exporting info..."
+echo "BATCHID=$BATCHID" | tee -a "$GITHUB_OUTPUT"
+echo "CIEL_WORKSPACE_DIR=$CIEL_WORKSPACE_DIR" | tee -a "$GITHUB_OUTPUT"
+echo "STATUS=success" | tee -a "$GITHUB_OUTPUT"
+
