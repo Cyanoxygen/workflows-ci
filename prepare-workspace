@@ -100,7 +100,9 @@ i "Adding instance..."
 sudo ciel add main
 
 i "Updating Container OS..."
+echo "::group::Updating the Container OS"
 script -eqc "sudo ciel update-os" /dev/null
+echo "::endgroup::"
 popd
 
 i "Successfully initialized Ciel workspace!"

@@ -208,10 +208,12 @@ cnt=0
 for i in ${PACKAGES[@]} ; do
 	i "Building $i..."
 	echo "$i" | tee $statfile > /dev/null
+	echo "::group::Building package: $i"
 	_LANG=$LANG
 	export LANG=C
 	safename=${i/\//_}
 	script -eqc "sudo LANG=C ciel build -i $CIEL_INSTANCE $i" $CIEL_WORKSPACE_DIR/ci-builds/$BATCHID/$safename.log
+	echo "::endgroup::"
 	if [ "$?" != "0" ] ; then
 		STATUS=fail
 		export LANG=$_LANG
